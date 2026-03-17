@@ -1,0 +1,16 @@
+services:
+  faircom-edge:
+    image: toddstoffel0810/faircom-edge:latest
+    container_name: faircom-edge
+    restart: unless-stopped
+    ports:
+      - "8080:8080"   # REST / JSON API
+      - "8443:8443"   # HTTPS
+      - "1883:1883"   # MQTT
+      - "8883:8883"   # MQTT over TLS
+      - "6597:6597"   # FairCom native
+    volumes:
+      - faircom_data:/opt/faircom/server/data
+
+volumes:
+  faircom_data:
