@@ -1,125 +1,108 @@
-# Chocolate Factory – FairCom Edge Modbus Simulator
+# Chocolate Factory – FairCom Edge Demo
 
-A Python-based Modbus TCP simulator and data backfill tool for
-[FairCom Edge](https://www.faircom.com/edge). The simulator exposes 3,982
-chocolate-factory sensors as Modbus holding registers so that FairCom Edge's
-native Modbus connector can collect and store live data into integration tables
-automatically. `generate_data.py` creates the integration table schema and
-backfills those tables with realistic historical sensor data.
+A complete chocolate factory IoT demo built on [FairCom Edge](https://www.faircom.com/edge). It includes a Modbus TCP simulator that exposes 3,982 plant-floor sensors as holding registers, a data backfill tool that pre-loads ~90,000 rows of realistic historical data, and a Docker Compose setup that brings the whole stack up in a single command.
 
 ## Architecture
 
 ```
-  modbus_simulator.py          FairCom Edge              FairCom Edge DB
+  modbus_simulator.py          FairCom Edge              ./data/
   ─────────────────────        ──────────────────────     ──────────────────
-  Modbus TCP server       ←→   Modbus connector       →   integration tables
-  (3,982 sensors as            (polls registers,           sensor_readings
-   holding registers)           stores readings)            sensor_alarms
-                                                            batch_log
-  generate_data.py    ─────────────────────────────────►   sensor_registry
-  (schema setup + backfill via JSON API)
+  Modbus TCP server       ←→   Modbus connector       →   17 integration tables
+  (3,982 sensors as            (polls per-segment          (one per line segment)
+   holding registers)           intervals, stores
+                                readings continuously)
+  generate_data.py    ─────────────────────────────────►  same integration tables
+  (setup + bulk backfill via JSON API)
 ```
 
-## Files
+FairCom Edge runs in Docker and stores all data in `./data/` (a local bind mount). The `./data/` directory is gitignored and distributed separately — when it is present, `docker compose up` starts with all historical data already loaded.
 
-| File | Purpose |
-|---|---|
-| `config.py` | Sensor definitions, simulation parameters, and FairCom connection defaults |
-| `generate_data.py` | Creates integration table schema, backfills historical data, file export |
-| `modbus_simulator.py` | Modbus TCP server — exposes all sensors as IEEE 754 float32 holding registers |
-| `docker-compose.yml` | Runs FairCom Edge locally with a persistent data volume |
+## Prerequisites
 
-## Sensor coverage (3,982 tags)
+- [Docker Desktop](https://www.docker.com/products/docker-desktop/)
+- Python 3.9+
+- A FairCom Edge license file (place it in `./license/` as `ctsrvr<serial>.lic`)
 
-Sensors are generated programmatically in `config.py` across 13 production lines and all
-shared plant systems.
-
-| Area | Detail | Tags |
-|---|---|---|
-| 13 Production lines | Tempering, 18-zone cooling tunnel, depositing, demolding, inspection, packaging, 5 conveyors | 1,443 |
-| 24 Conching vessels | Temperature, torque, speed, vibration, power | 120 |
-| 16 Ball mills / refiners | Inlet/outlet temp, pressure, speed, power, vibration | 96 |
-| 6 Roasters | Drum/bean/exhaust temp, drum speed, gas flow, moisture, vibration, power | 48 |
-| Ingredient storage | 12 sugar silos, 10 cocoa butter tanks, 8 cocoa mass tanks, 8 milk powder silos, lecithin & flavor tanks | 194 |
-| Utilities | 8 refrigeration compressors, 4 boilers, 12 chilled water circuits, 4 compressed air systems | 200 |
-| 50 AHUs | Supply/return air temp, humidity, fan speed, filter differential pressure | 250 |
-| 12 cold rooms + 4 freezers | Multi-point temp, humidity, door status, evaporator temp, defrost, refrigerant pressure | 120 |
-| 150 electrical sub-meters | Active power (kW), cumulative energy (kWh), power factor | 450 |
-| 187 motors | Vibration X/Y/Z and bearing temperature | 748 |
-| 80 environmental points | Temperature, humidity, CO2 per room/zone | 240 |
-| Water treatment | 4 RO units, 4 process water tanks | 32 |
-| 6 palletizers | Cycle rate, arm torque/speed, gripper vacuum, pallet weight | 36 |
-| 10 dosing weighers | Instantaneous weight, batch total, feed rate, belt speed/tension | 50 |
-| **Total** | | **3,982** |
-
-## Requirements
+Install Python dependencies (no virtual environment required):
 
 ```bash
 pip install pymodbus>=3.0 requests
 ```
 
-`requests` is only needed when connecting to FairCom Edge. JSON and CSV export work without it.
-`pymodbus` is only needed to run the Modbus simulator.
-
 ## Quick start
 
 ```bash
-# 1. Start FairCom Edge
+# 1. Start FairCom Edge (loads pre-seeded data if ./data/ is present)
 docker compose up -d
 
-# 2. Create integration tables and seed the sensor registry
-python3 generate_data.py --mode setup
+# 2. (First run only) Create the 17 integration tables and connect to the simulator
+python generate_data.py --mode setup -y
 
-# 3. Backfill 30 minutes of historical data into the integration tables (default)
-python3 generate_data.py
+# 3. (Optional) Bulk-backfill ~90k rows of historical data
+python generate_data.py --mode backfill --seconds 10600 --row-delay 0 -y
 
-# 4. Start the Modbus TCP simulator
-python3 modbus_simulator.py
-
-# 5. In FairCom Edge Explorer, configure a Modbus connector:
-#    - Host: localhost (or host.docker.internal from inside docker)  Port: 502
-#    - Register type: ieeefloat32ABCD   Data length: 2   Unit ID: 1
-#    - Sensor i → address i*2  (see modbus_simulator.py for the full mapping)
-#    Alternatively, run the helper to register the first 100 sensors automatically:
-python3 modbus_simulator.py --setup-connector
+# 4. Start the live Modbus TCP simulator on port 5020
+python modbus_simulator.py
 ```
 
-### File export (no FairCom required)
+FairCom Edge's REST API and Explorer are available at **http://localhost:8080** (admin / ADMIN).
 
-```bash
-# Backfill to JSON files
-python3 generate_data.py --output json
+## Files
 
-# Backfill to CSV files
-python3 generate_data.py --output csv
+| File | Purpose |
+|---|---|
+| `config.py` | All 3,982 sensor definitions, per-sensor polling intervals, and connection defaults |
+| `generate_data.py` | Schema setup, historical backfill, and live streaming via FairCom JSON API |
+| `modbus_simulator.py` | Async Modbus TCP server — each sensor refreshes at its own realistic interval |
+| `check_state.py` | Prints live row counts for all 17 integration tables |
+| `docker-compose.yml` | Runs FairCom Edge with bind-mounted `./data/`, `./config/`, and `./libs/` |
+| `Dockerfile` | Builds a licensed image — removes the eval license baked into the base image |
+| `requirements.txt` | Python dependencies |
 
-# Backfill a custom time range
-python3 generate_data.py --seconds 7200
-```
+## Sensor coverage (3,982 tags)
 
-## Connection settings
+Sensors are generated in `config.py` across 17 line segments and all shared plant systems.
 
-Defaults are read from the top of `config.py`:
+| Segment | Description | Tags |
+|---|---|---|
+| `tempering` | 13 tempering machines × 22 zones — temps, speed, viscosity, power | 286 |
+| `cooling_tunnel` | 5 tunnels × 18 zones × fan/belt/temp/humidity per zone | 1,235 |
+| `depositing` | Chocolate temp, vacuum, pressure, pump speed per depositor | 65 |
+| `demolding` | Vibration, cylinder pressure, belt speed, motor health | 39 |
+| `inspection` | Vision system pass/fail, weight, date-code check (0.5 s polling) | 78 |
+| `packaging` | Bar count, label/date OK, film tension, rejects, sealer temp | 104 |
+| `mixing_conching` | 24 conching vessels — temp, torque, speed, vibration, power | 120 |
+| `refining` | 16 ball mills — inlet/outlet temp, pressure, speed, power | 160 |
+| `roasting` | 6 roasters — drum/bean/exhaust temp, gas flow, moisture, vibration | 48 |
+| `ingredient_dosing` | 10 dosing weighers — batch weight, feed rate, belt speed | 244 |
+| `utilities` | 8 compressors, 4 boilers, 12 chilled-water circuits, 4 compressed-air systems | 440 |
+| `hvac` | 50 AHUs — supply/return temp, humidity, fan speed, filter ΔP | 330 |
+| `cold_storage` | 12 cold rooms + 4 freezers — multi-point temp, door, defrost, refrigerant | 120 |
+| `energy` | 150 sub-meters — active power (kW), cumulative energy (kWh), power factor | 450 |
+| `environmental` | 80 zones — temperature, humidity, CO₂ | 195 |
+| `water_treatment` | 4 RO units, 4 process water tanks — flow, pH, TDS, conductivity | 32 |
+| `palletizing` | 6 palletizers — cycle rate, arm torque/speed, gripper vacuum, pallet weight | 36 |
+| **Total** | | **3,982** |
 
-```python
-FAIRCOM_HOST     = "localhost"
-FAIRCOM_PORT     = 8080
-FAIRCOM_DB       = "faircom"
-FAIRCOM_USER     = "admin"
-FAIRCOM_PASSWORD = "ADMIN"
-```
+## Polling intervals
 
-Connection parameters can also be passed on the command line:
+Each sensor is assigned a realistic polling interval in `config.py` based on its function:
 
-```bash
-python3 generate_data.py --host 192.168.1.50 --user admin --yes
-```
+| Interval | Sensor types |
+|---|---|
+| 0.5 s | Inspection pass/fail, label and date-code checks |
+| 1 s | Critical tempering temps, depositor vacuum/pressure, weight checks |
+| 2 s | Vibration (X/Y/Z), current |
+| 5 s | Flow, pressure, speed, power, valve position, door status |
+| 10 s | General temperatures, humidity, fan speed, environmental, power factor |
+| 30 s | Level, bearing temps, filter ΔP, batch weight, pH |
+| 60 s | Viscosity, TDS, cumulative energy (kWh) |
+
+The Modbus simulator ticks at 100 ms and refreshes each register only when its interval elapses. FairCom Edge connector poll rates match the fastest sensor in each segment.
 
 ## Modbus register layout
 
-Each sensor occupies two consecutive 16-bit holding registers encoding an IEEE 754
-float32 value in ABCD (big-endian) byte order — matching FairCom Edge's
-`"modbusRegisterType": "ieeefloat32ABCD"` setting.
+Each sensor occupies two consecutive 16-bit holding registers encoding an IEEE 754 float32 value in ABCD (big-endian) byte order — matching FairCom Edge's `"modbusRegisterType": "ieeefloat32ABCD"` setting.
 
 | Sensor index | Register addresses |
 |---|---|
@@ -127,28 +110,21 @@ float32 value in ABCD (big-endian) byte order — matching FairCom Edge's
 | 1 | 2, 3 |
 | i | i×2, i×2+1 |
 
-## Database schema
+## Simulation model
 
-| Table | Description |
-|---|---|
-| `sensor_readings` | Time-series readings — timestamp, tag, value, unit, segment, batch_id, quality |
-| `sensor_alarms` | Records when a reading exceeds a sensor's configured high or low limit |
-| `batch_log` | Batch start/end times, product code, and status |
-| `sensor_registry` | Metadata for all 3,982 tags — setpoint, limits, units, sample interval, data type |
-
-All timestamps are stored as Unix epoch integers (seconds since 1970-01-01 UTC).
-
-## Simulation behavior
-
-Readings are generated using per-sensor setpoints with the following noise model applied
-on top:
+Each sensor generates values using a per-sensor setpoint with the following applied on top:
 
 - Gaussian noise scaled by a per-sensor `noise_std`
-- Random slow drift that self-corrects over time
-- Low-probability anomaly spikes (configurable via `ANOMALY_PROBABILITY` in `config.py`)
-- Subtle sinusoidal oscillation to simulate PID cycling behavior
+- Slow random drift that self-corrects over time
+- Low-probability anomaly spikes (controlled by `ANOMALY_PROBABILITY` in `config.py`)
+- Subtle sinusoidal oscillation to simulate PID cycling
 
-Quality flags: `0` = good, `1` = suspect (within 2 sigma of a limit), `2` = alarm (outside limit).
+## Distributing the demo
 
-Batch IDs roll over every `BATCH_DURATION_SECONDS` (default: 10 minutes). Readings carry
-the batch ID active at the time they were generated.
+The `./data/` folder (FairCom's binary DB files, ~900 MB) is gitignored. To share a seeded demo:
+
+1. Stop the container: `docker compose stop`
+2. Zip the project folder including `./data/`
+3. Recipient unzips and runs `docker compose up -d` — data loads immediately
+
+No setup or backfill scripts needed on the receiving end.
