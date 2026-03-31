@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="us-ascii"?>
+<replfilefilter version="1" persistent="y">
+        <file status="include">.\ctreeSQL.dbs\admin_test.dat</file>
+        <purpose>create_file</purpose>
+        <purpose>read_log</purpose>
+</replfilefilter>

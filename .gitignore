@@ -7,13 +7,18 @@ __pycache__/
 dist/
 build/
 
-# Virtual environments
-.venv/
-venv/
-env/
-
 # Output files
 output/
+
+# FairCom data (binary DB files — distribute separately)
+data/
+
+# FairCom installer tarballs
+*.tar
+
+# License files
+license/*.lic
+*.lic
 
 # Internal notes
 idea.txt
@@ -23,3 +28,5 @@ idea.txt
 .idea/
 .vscode/
 *.swp
+
+license/

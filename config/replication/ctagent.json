@@ -1,0 +1,8 @@
+{
+	"managed": false,
+	"configurationFileList": [
+		"../config/replication/ctreplagent1.cfg",
+		"../config/replication/ctreplagent2.cfg",
+		"../config/replication/ctreplagent3.cfg"
+	]
+}

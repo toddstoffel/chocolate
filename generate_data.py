@@ -1,21 +1,30 @@
 """
-Chocolate Factory – Fake Data Generator for FairCom Edge
+Chocolate Factory – FairCom Edge Setup and Data Backfill
 
-Generates realistic time-series sensor data for a chocolate bar
-manufacturing line and publishes it to FairCom Edge via its REST/JSON API.
+Mirrors what a factory user would do when onboarding FairCom Edge:
+  1. Start FairCom Edge and the Modbus device simulator.
+  2. "Connect to the sensor" – create a Modbus input in FairCom Edge that
+     points at the simulator.  FairCom auto-creates the sensor_readings
+     integration table and begins polling immediately.
+  3. Backfill that same integration table with realistic historical data so
+     dashboards and queries have a populated dataset from day one.
 
 Usage:
-    # Live streaming mode (pushes data every second)
-    python generate_data.py --mode stream
+    # Connect FairCom Edge to the Modbus simulator (auto-creates sensor_readings)
+    python generate_data.py --mode setup
 
-    # Backfill historical data (default: 1 hour)
-    python generate_data.py --mode backfill --seconds 3600
+    # Backfill 30 minutes of historical data into the integration tables
+    python generate_data.py
+
+    # Backfill a custom time window
+    python generate_data.py --seconds 7200
 
     # Dump to JSON files instead of sending to FairCom
-    python generate_data.py --mode backfill --output json
+    python generate_data.py --output json
 
-    # Dump to CSV files
-    python generate_data.py --mode backfill --output csv
+    # Stream live data directly to FairCom (mirrors what the Modbus connector
+    # writes, one snapshot per poll interval)
+    python generate_data.py --mode stream
 """
 
 import argparse
@@ -25,9 +34,9 @@ import json
 import math
 import os
 import random
+import struct
 import sys
 import time
-import uuid
 from datetime import datetime, timezone, timedelta
 from pathlib import Path
 
@@ -38,8 +47,6 @@ except ImportError:
 
 from config import (
     SENSORS,
-    LINE_SEGMENTS,
-    FAIRCOM_BASE_URL,
     FAIRCOM_DB,
     FAIRCOM_USER,
     FAIRCOM_PASSWORD,
@@ -47,14 +54,16 @@ from config import (
     DEFAULT_INTERVAL,
     ANOMALY_PROBABILITY,
     DRIFT_PROBABILITY,
-    BATCH_DURATION_SECONDS,
-    BATCH_PREFIX,
+    MODBUS_CONNECT_HOST,
+    MODBUS_PORT,
+    MODBUS_UNIT_ID,
 )
 
 # ─── Helpers ───────────────────────────────────────────────────────────────────
 
-def make_batch_id(batch_num: int) -> str:
-    return f"{BATCH_PREFIX}-{batch_num:06d}"
+def _as_float32(v: float) -> float:
+    """Quantize v to IEEE 754 single-precision, matching Modbus 32-bit register precision."""
+    return struct.unpack('f', struct.pack('f', v))[0]
 
 
 class SensorState:
@@ -100,7 +109,7 @@ class SensorState:
 
         if s["dtype"] == "int":
             return max(int(round(value)), 0)
-        return round(value, 4)
+        return _as_float32(value)
 
 
 # ─── FairCom Edge API calls ───────────────────────────────────────────────────
@@ -168,20 +177,80 @@ def faircom_api(endpoint: str, payload: dict, ok_codes: set = frozenset()) -> di
         return None
 
 
-def ensure_table(table_name: str, columns: list[dict]):
-    """Create a table in FairCom Edge if it doesn't exist."""
-    payload = {
-        "api": "db",
-        "action": "createTable",
-        "params": {
-            "databaseName": _db,
-            "tableName": table_name,
-            "fields": columns,
-        },
-    }
-    result = faircom_api("db", payload, ok_codes={4021, 4022})
-    if result is not None:
-        print(f"  Table '{table_name}': OK")
+# Build a stable lookup: segment → [(global_sensor_index, sensor_dict), ...]
+# Ordered by appearance in SENSORS so register addresses are deterministic.
+_SEGMENT_SENSORS: dict[str, list[tuple[int, dict]]] = {}
+for _i, _s in enumerate(SENSORS):
+    _SEGMENT_SENSORS.setdefault(_s["segment"], []).append((_i, _s))
+
+
+def setup_modbus_connectors(modbus_server: str = None, modbus_port: int = None):
+    """Create one Modbus input (and integration table) per line segment.
+
+    Each input maps only the sensors belonging to that segment.  Register
+    addresses are the global sensor index × 2, matching the simulator layout.
+    FairCom Edge auto-creates each integration table and begins polling.
+    """
+    server = modbus_server or MODBUS_CONNECT_HOST
+    port   = modbus_port   or MODBUS_PORT
+
+    # Remove old single-input if it still exists
+    faircom_api("hub", {
+        "api": "hub", "action": "deleteInput",
+        "params": {"inputName": "modbus_simulator"},
+    }, ok_codes=frozenset(range(12000, 12100)))
+
+    # Delete old sensor_readings integration table
+    faircom_api("hub", {
+        "api": "hub", "action": "deleteIntegrationTables",
+        "params": {"databaseName": _db, "tableNames": ["sensor_readings"]},
+    }, ok_codes=frozenset(range(12000, 12100)))
+
+    created = 0
+    for seg_name, sensor_list in _SEGMENT_SENSORS.items():
+        # Idempotent – delete the input if it already exists
+        faircom_api("hub", {
+            "api": "hub", "action": "deleteInput",
+            "params": {"inputName": seg_name},
+        }, ok_codes=frozenset(range(12000, 12100)))
+
+        property_map = [
+            {
+                "propertyPath":       s["tag"],
+                "modbusDataAccess":   "holdingregister",
+                "modbusDataAddress":  i * 2,       # global register address
+                "modbusUnitId":       MODBUS_UNIT_ID,
+                "modbusDataLen":      2,
+                "modbusRegisterType": "ieeefloat32ABCD",
+            }
+            for i, s in sensor_list
+        ]
+
+        result = faircom_api("hub", {
+            "api": "hub",
+            "action": "createInput",
+            "params": {
+                "inputName":   seg_name,
+                "serviceName": "modbus",
+                "settings": {
+                    "modbusProtocol":                    "TCP",
+                    "modbusServer":                      server,
+                    "modbusServerPort":                  port,
+                    "dataCollectionIntervalMilliseconds": max(500, int(
+                        min(s.get("interval", DEFAULT_INTERVAL) for _, s in sensor_list) * 1000
+                    )),
+                    "propertyMapList":                   property_map,
+                },
+                "databaseName": _db,
+                "tableName":    seg_name,
+            },
+        })
+        if result is not None:
+            print(f"  [{seg_name}]  {len(sensor_list)} sensors → table '{seg_name}'")
+            created += 1
+
+    print(f"  {created}/{len(_SEGMENT_SENSORS)} segment inputs created")
+    print(f"  FairCom Edge will poll {server}:{port} (per-segment fastest interval used)")
 
 
 def insert_rows(table_name: str, rows: list[dict]):
@@ -206,378 +275,202 @@ def insert_rows(table_name: str, rows: list[dict]):
 
 # ─── Schema creation ──────────────────────────────────────────────────────────
 
-READINGS_TABLE = "sensor_readings"
-ALARMS_TABLE = "sensor_alarms"
-BATCHES_TABLE = "batch_log"
-SENSORS_TABLE = "sensor_registry"
 
-# FairCom auto-adds a bigint 'id' primary key to every table.
-# varchar fields require a separate 'length' property.
-READINGS_COLUMNS = [
-    {"name": "timestamp",  "type": "timestamp"},
-    {"name": "tag",        "type": "varchar", "length": 64},
-    {"name": "value",      "type": "float"},
-    {"name": "unit",       "type": "varchar", "length": 16},
-    {"name": "segment",    "type": "varchar", "length": 32},
-    {"name": "batch_id",   "type": "varchar", "length": 32},
-    {"name": "quality",    "type": "smallint"},
-]
+def create_schema(modbus_server: str = None, modbus_port: int = None):
+    """Create one Modbus input + integration table per line segment.
 
-ALARMS_COLUMNS = [
-    {"name": "timestamp",   "type": "timestamp"},
-    {"name": "tag",         "type": "varchar", "length": 64},
-    {"name": "value",       "type": "float"},
-    {"name": "limit_type",  "type": "varchar", "length": 8},
-    {"name": "limit_value", "type": "float"},
-    {"name": "batch_id",    "type": "varchar", "length": 32},
-]
-
-BATCHES_COLUMNS = [
-    {"name": "batch_id",     "type": "varchar", "length": 32},
-    {"name": "start_time",   "type": "timestamp"},
-    {"name": "end_time",     "type": "timestamp"},
-    {"name": "product_code", "type": "varchar", "length": 32},
-    {"name": "status",       "type": "varchar", "length": 16},
-]
-
-REGISTRY_COLUMNS = [
-    {"name": "tag",          "type": "varchar", "length": 64},
-    {"name": "description",  "type": "varchar", "length": 128},
-    {"name": "unit",         "type": "varchar", "length": 16},
-    {"name": "segment",      "type": "varchar", "length": 32},
-    {"name": "setpoint",     "type": "float"},
-    {"name": "low_limit",    "type": "float"},
-    {"name": "high_limit",   "type": "float"},
-    {"name": "dtype",        "type": "varchar", "length": 8},
-    {"name": "interval_sec", "type": "float"},
-]
-
-PRODUCT_CODES = ["DARK-70", "DARK-85", "MILK-CLASSIC", "MILK-HAZELNUT", "WHITE-VANILLA"]
-
-
-def create_schema():
-    """Create all tables and seed the sensor registry."""
-    # Create database first
-    faircom_api("db", {
-        "api": "db",
-        "action": "createDatabase",
-        "params": {"databaseName": _db},
-    }, ok_codes={4021, 4022})
-
-    ensure_table(READINGS_TABLE, READINGS_COLUMNS)
-    ensure_table(ALARMS_TABLE, ALARMS_COLUMNS)
-    ensure_table(BATCHES_TABLE, BATCHES_COLUMNS)
-    ensure_table(SENSORS_TABLE, REGISTRY_COLUMNS)
-
-    # Seed sensor registry
-    registry_rows = []
-    for s in SENSORS:
-        registry_rows.append({
-            "tag": s["tag"],
-            "description": s["desc"],
-            "unit": s["unit"],
-            "segment": s["segment"],
-            "setpoint": s["setpoint"],
-            "low_limit": s["low_limit"],
-            "high_limit": s["high_limit"],
-            "dtype": s["dtype"],
-            "interval_sec": s.get("interval", DEFAULT_INTERVAL),
-        })
-    insert_rows(SENSORS_TABLE, registry_rows)
-    print(f"  ✓ sensor_registry  {len(registry_rows):,} sensors seeded")
-    print("Schema creation complete.\n")
+    FairCom Edge auto-creates each integration table and begins polling the
+    Modbus simulator immediately after each createInput call.
+    """
+    setup_modbus_connectors(modbus_server, modbus_port)
+    print("\nSetup complete.\n")
 
 
 # ─── Data generation engine ───────────────────────────────────────────────────
 
-def generate_readings(start_time: datetime, end_time: datetime):
-    """Yield (timestamp, tag, value, unit, segment, batch_id, quality) tuples."""
-    states = {s["tag"]: SensorState(s) for s in SENSORS}
-    intervals = {s["tag"]: s.get("interval", DEFAULT_INTERVAL) for s in SENSORS}
-    next_fire = {tag: 0.0 for tag in states}
+def generate_snapshots(start_time: datetime, end_time: datetime):
+    """Yield (ts_str, snapshot_dict) tuples, one per DEFAULT_INTERVAL tick.
 
-    total_seconds = (end_time - start_time).total_seconds()
-    batch_num = 1
-    batch_start = 0.0
-    batch_id = make_batch_id(batch_num)
-    batches = []
-
+    Mirrors real PLC / Modbus holding-register behaviour: each sensor value
+    is regenerated only when its own polling interval elapses and held at the
+    last reading between updates — exactly what FairCom Edge would collect.
+    """
+    states      = {s["tag"]: SensorState(s) for s in SENSORS}
+    current     = {s["tag"]: float(states[s["tag"]].generate_value(0.0)) for s in SENSORS}
+    next_update = {s["tag"]: 0.0 for s in SENSORS}
+    total_s = (end_time - start_time).total_seconds()
     t = 0.0
-    min_interval = min(intervals.values())
 
-    while t <= total_seconds:
-        ts = start_time + timedelta(seconds=t)
-        ts_str = str(int(ts.timestamp()))
+    while t <= total_s:
+        ts     = start_time + timedelta(seconds=t)
+        ts_str = ts.strftime("%Y-%m-%dT%H:%M:%S.000Z")
 
-        # batch management
-        if t - batch_start >= BATCH_DURATION_SECONDS:
-            batches.append({
-                "batch_id": batch_id,
-                "start_time": str(int((start_time + timedelta(seconds=batch_start)).timestamp())),
-                "end_time": ts_str,
-                "product_code": random.choice(PRODUCT_CODES),
-                "status": "completed",
-            })
-            batch_num += 1
-            batch_start = t
-            batch_id = make_batch_id(batch_num)
+        for s in SENSORS:
+            tag = s["tag"]
+            if t >= next_update[tag]:
+                current[tag]     = float(states[tag].generate_value(t))
+                next_update[tag] = t + s.get("interval", DEFAULT_INTERVAL)
 
-        for tag, state in states.items():
-            if t < next_fire[tag]:
-                continue
-            next_fire[tag] = t + intervals[tag]
+        yield ts_str, dict(current)
+        t += DEFAULT_INTERVAL
 
-            value = state.generate_value(t)
-            s = state.sensor
 
-            # Determine quality flag
-            quality = 0
-            if s["dtype"] == "float":
-                if value < s["low_limit"] or value > s["high_limit"]:
-                    quality = 2
-                elif (
-                    value < s["low_limit"] + s["noise_std"] * 2
-                    or value > s["high_limit"] - s["noise_std"] * 2
-                ):
-                    quality = 1
-
-            yield {
-                "timestamp": ts_str,
-                "tag": tag,
-                "value": float(value),
-                "unit": s["unit"],
-                "segment": s["segment"],
-                "batch_id": batch_id,
-                "quality": quality,
-            }
-
-        t += min_interval
-
-    # Close final batch
-    batches.append({
-        "batch_id": batch_id,
-        "start_time": str(int((start_time + timedelta(seconds=batch_start)).timestamp())),
-        "end_time": str(int(end_time.timestamp())),
-        "product_code": random.choice(PRODUCT_CODES),
-        "status": "in_progress",
+def _sql(query: str) -> dict:
+    """Execute a SQL statement via runSqlStatements and return the first reaction."""
+    result = faircom_api("db", {
+        "api": "db",
+        "action": "runSqlStatements",
+        "params": {"databaseName": _db, "sqlStatements": [query]},
     })
+    if result is None:
+        return {}
+    return result.get("result", {}).get("reactions", [{}])[0]
 
-    return batches
 
+def run_backfill(seconds: int, output: str, segment: str | None = None,
+                 row_delay: float = 2.0):
+    """Generate historical data and either push to FairCom or save to files.
 
-def run_backfill(seconds: int, output: str):
-    """Generate historical data and either push to FairCom or save to files."""
-    end_time = datetime.now(timezone.utc)
+    Args:
+        seconds:    How many seconds of history to generate.
+        output:     'faircom', 'json', or 'csv'.
+        segment:    If given, only backfill the named segment (e.g. 'cold_storage').
+                    Useful for targeted testing.  None means all segments.
+        row_delay:  Seconds to sleep between inserting each time-slot row (faircom
+                    mode only).  Each slot inserts one row per segment so the outer
+                    create_ts is spread over ``row_delay * num_snapshots`` seconds,
+                    making the backfill data usable in time-series charts.
+                    Default: 2.0 s (31 snapshots × 2 s ≈ 62 s total).
+                    Use 0 for the legacy bulk-insert behaviour.
+    """
+    end_time   = datetime.now(timezone.utc)
     start_time = end_time - timedelta(seconds=seconds)
 
+    # Filter to the requested segment(s)
+    if segment:
+        if segment not in _SEGMENT_SENSORS:
+            print(f"ERROR: segment '{segment}' not found.  Known: {sorted(_SEGMENT_SENSORS)}")
+            return
+        seg_items = {segment: _SEGMENT_SENSORS[segment]}
+    else:
+        seg_items = _SEGMENT_SENSORS
+
+    num_segs = len(seg_items)
+    sensor_count = sum(len(v) for v in seg_items.values())
     print(f"Generating {seconds}s of backfill data  ({start_time} → {end_time})")
-    print(f"  Sensors: {len(SENSORS)}")
+    print(f"  Segments: {num_segs}  |  Sensors: {sensor_count}")
     print()
 
-    if output == "faircom":
-        create_schema()
+    all_snapshots: list[tuple[str, dict]] = []
+    for ts_str, snap in generate_snapshots(start_time, end_time):
+        all_snapshots.append((ts_str, snap))
 
-    readings = []
-    alarms = []
-    batches = []
-
-    gen = generate_readings(start_time, end_time)
-
-    # generate_readings is a generator that also returns batches at the end
-    # We need to collect all readings
-    for row in gen:
-        readings.append(row)
-        # Check for alarm
-        if row["quality"] == 2:
-            sensor_def = next(s for s in SENSORS if s["tag"] == row["tag"])
-            limit_type = "high" if row["value"] > sensor_def["high_limit"] else "low"
-            limit_val = (
-                sensor_def["high_limit"]
-                if limit_type == "high"
-                else sensor_def["low_limit"]
-            )
-            alarms.append({
-                "timestamp": row["timestamp"],
-                "tag": row["tag"],
-                "value": row["value"],
-                "limit_type": limit_type,
-                "limit_value": limit_val,
-                "batch_id": row["batch_id"],
-            })
-
-    # generate_readings returns batches via StopIteration value
-    # Re-generate batch info
-    batch_num = 1
-    batch_start_t = start_time
-    while batch_start_t < end_time:
-        batch_end_t = min(batch_start_t + timedelta(seconds=BATCH_DURATION_SECONDS), end_time)
-        status = "completed" if batch_end_t < end_time else "in_progress"
-        batches.append({
-            "batch_id": make_batch_id(batch_num),
-            "start_time": str(int(batch_start_t.timestamp())),
-            "end_time": str(int(batch_end_t.timestamp())),
-            "product_code": random.choice(PRODUCT_CODES),
-            "status": status,
-        })
-        batch_num += 1
-        batch_start_t = batch_end_t
-
-    print(f"\n  Generated {len(readings):,} readings, {len(alarms):,} alarms, {len(batches)} batches")
+    total = len(all_snapshots)
+    print(f"  Generated {total:,} snapshots")
 
     if output == "faircom":
-        # Bulk insert readings with live progress
-        chunk_size = 5000
-        total_readings = len(readings)
-        num_chunks = max(1, (total_readings + chunk_size - 1) // chunk_size)
-        for idx, i in enumerate(range(0, total_readings, chunk_size), 1):
-            insert_rows(READINGS_TABLE, readings[i : i + chunk_size])
-            so_far = min(i + chunk_size, total_readings)
-            print(
-                f"  sensor_readings  chunk {idx}/{num_chunks}  "
-                f"({so_far:,} / {total_readings:,} rows)",
-                end="\r", flush=True,
-            )
-        print(f"  sensor_readings  {total_readings:,} rows inserted  ✓" + " " * 20)
-        insert_rows(ALARMS_TABLE, alarms)
-        print(f"  sensor_alarms    {len(alarms):,} rows inserted  ✓")
-        insert_rows(BATCHES_TABLE, batches)
-        print(f"  batch_log        {len(batches):,} rows inserted  ✓")
+        # Build per-segment tag lists once.
+        seg_tags = {seg_name: [s["tag"] for _, s in sensor_list]
+                    for seg_name, sensor_list in seg_items.items()}
+
+        if row_delay > 0:
+            # ── Trickle mode ────────────────────────────────────────────────
+            # Insert ONE row per segment per time-slot, then sleep row_delay
+            # seconds.  This ensures each backfill row receives a distinct
+            # server-side create_ts, making the data usable in time-series
+            # charts without requiring a 30-minute wait.
+            est_secs = total * row_delay
+            print(f"  Trickle mode: {total} slots × {row_delay}s delay ≈ {est_secs:.0f}s total")
+            print(f"  Inserting across {num_segs} segment(s) …\n")
+            seg_failed = {seg_name: 0 for seg_name in seg_items}
+            for slot_idx, (ts_str, snap) in enumerate(all_snapshots, 1):
+                for seg_name, tags in seg_tags.items():
+                    row = {"error": False,
+                           "source_payload": {"create_ts": ts_str,
+                                              **{t: snap[t] for t in tags}}}
+                    ok = insert_rows(seg_name, [row])
+                    if not ok:
+                        seg_failed[seg_name] += 1
+                pct = slot_idx / total * 100
+                print(f"  Slot {slot_idx:>3}/{total}  ({pct:.0f}%)  ts={ts_str}",
+                      end="\r", flush=True)
+                if slot_idx < total:
+                    time.sleep(row_delay)
+            print()  # clear the progress line
+            for seg_name in seg_items:
+                failed = seg_failed[seg_name]
+                status = "✗" if failed else "✓"
+                print(f"  {seg_name:<25} {total:,} rows  {status}")
+        else:
+            # ── Bulk mode (legacy) ───────────────────────────────────────────
+            chunk_size = 500
+            for seg_name, tags in seg_tags.items():
+                # Include create_ts inside source_payload so historical time is
+                # preserved.  (The outer create_ts column is auto-set to insertion
+                # time by FairCom and cannot be overridden via the HTTP API.)
+                rows = [
+                    {"error": False,
+                     "source_payload": {"create_ts": ts_str, **{t: snap[t] for t in tags}}}
+                    for ts_str, snap in all_snapshots
+                ]
+                failed = 0
+                num_chunks = max(1, (total + chunk_size - 1) // chunk_size)
+                for idx, i in enumerate(range(0, total, chunk_size), 1):
+                    ok = insert_rows(seg_name, rows[i: i + chunk_size])
+                    if not ok:
+                        failed += len(rows[i: i + chunk_size])
+                    print(f"  {seg_name:<25} chunk {idx}/{num_chunks}", end="\r", flush=True)
+                status = "✗" if failed else "✓"
+                print(f"  {seg_name:<25} {total:,} rows  {status}" + " " * 10)
         print("\nBackfill complete – data is in FairCom Edge.")
 
     elif output == "json":
         out_dir = Path("output")
         out_dir.mkdir(exist_ok=True)
-        with open(out_dir / "sensor_readings.json", "w") as f:
-            json.dump(readings, f, indent=2)
-        with open(out_dir / "sensor_alarms.json", "w") as f:
-            json.dump(alarms, f, indent=2)
-        with open(out_dir / "batch_log.json", "w") as f:
-            json.dump(batches, f, indent=2)
-        with open(out_dir / "sensor_registry.json", "w") as f:
-            registry = []
-            for s in SENSORS:
-                registry.append({
-                    "tag": s["tag"],
-                    "description": s["desc"],
-                    "unit": s["unit"],
-                    "segment": s["segment"],
-                    "setpoint": s["setpoint"],
-                    "low_limit": s["low_limit"],
-                    "high_limit": s["high_limit"],
-                    "dtype": s["dtype"],
-                    "interval_sec": s.get("interval", DEFAULT_INTERVAL),
-                })
-            json.dump(registry, f, indent=2)
-        print(f"\nFiles written to {out_dir.resolve()}/")
+        for seg_name, sensor_list in seg_items.items():
+            tags = [s["tag"] for _, s in sensor_list]
+            data = [{"create_ts": ts, "source_payload": {"create_ts": ts, **{t: snap[t] for t in tags}}}
+                    for ts, snap in all_snapshots]
+            with open(out_dir / f"{seg_name}.json", "w") as f:
+                json.dump(data, f, indent=2)
+        print(f"\nJSON files written to {out_dir.resolve()}/")
 
     elif output == "csv":
         out_dir = Path("output")
         out_dir.mkdir(exist_ok=True)
-
-        with open(out_dir / "sensor_readings.csv", "w", newline="") as f:
-            w = csv.DictWriter(f, fieldnames=list(readings[0].keys()))
-            w.writeheader()
-            w.writerows(readings)
-
-        if alarms:
-            with open(out_dir / "sensor_alarms.csv", "w", newline="") as f:
-                w = csv.DictWriter(f, fieldnames=list(alarms[0].keys()))
+        for seg_name, sensor_list in seg_items.items():
+            tags = [s["tag"] for _, s in sensor_list]
+            rows = [{"create_ts": ts, **{t: snap[t] for t in tags}}
+                    for ts, snap in all_snapshots]
+            with open(out_dir / f"{seg_name}.csv", "w", newline="") as f:
+                w = csv.DictWriter(f, fieldnames=list(rows[0].keys()))
                 w.writeheader()
-                w.writerows(alarms)
-
-        with open(out_dir / "batch_log.csv", "w", newline="") as f:
-            w = csv.DictWriter(f, fieldnames=list(batches[0].keys()))
-            w.writeheader()
-            w.writerows(batches)
-
+                w.writerows(rows)
         print(f"\nCSV files written to {out_dir.resolve()}/")
 
 
+
 def run_stream():
-    """Stream live data to FairCom Edge in real time."""
-    create_schema()
-
+    """Stream live data to FairCom Edge in real time (one snapshot per interval)."""
     states = {s["tag"]: SensorState(s) for s in SENSORS}
-    intervals = {s["tag"]: s.get("interval", DEFAULT_INTERVAL) for s in SENSORS}
-    last_fire = {tag: 0.0 for tag in states}
-
-    batch_num = 1
-    batch_id = make_batch_id(batch_num)
-    batch_start = time.time()
 
     print("Streaming live data to FairCom Edge.  Ctrl+C to stop.\n")
     t0 = time.time()
 
     try:
         while True:
-            now = time.time()
+            now     = time.time()
             elapsed = now - t0
-            ts_str = str(int(now))
+            ts_str  = datetime.utcfromtimestamp(now).strftime("%Y-%m-%dT%H:%M:%S")
 
-            # Batch rollover
-            if now - batch_start >= BATCH_DURATION_SECONDS:
-                insert_rows(BATCHES_TABLE, [{
-                    "batch_id": batch_id,
-                    "start_time": str(int(batch_start)),
-                    "end_time": ts_str,
-                    "product_code": random.choice(PRODUCT_CODES),
-                    "status": "completed",
-                }])
-                batch_num += 1
-                batch_id = make_batch_id(batch_num)
-                batch_start = now
+            snapshot = {s["tag"]: float(states[s["tag"]].generate_value(elapsed)) for s in SENSORS}
 
-            readings_batch = []
-            alarms_batch = []
+            for seg_name, sensor_list in _SEGMENT_SENSORS.items():
+                tags = [s["tag"] for _, s in sensor_list]
+                insert_rows(seg_name, [{"source_payload": {"create_ts": ts_str,
+                                                           **{t: snapshot[t] for t in tags}}}])
 
-            for tag, state in states.items():
-                if elapsed - last_fire[tag] < intervals[tag]:
-                    continue
-                last_fire[tag] = elapsed
-
-                value = state.generate_value(elapsed)
-                s = state.sensor
-                quality = 0
-                if s["dtype"] == "float":
-                    if value < s["low_limit"] or value > s["high_limit"]:
-                        quality = 2
-                    elif (
-                        value < s["low_limit"] + s["noise_std"] * 2
-                        or value > s["high_limit"] - s["noise_std"] * 2
-                    ):
-                        quality = 1
-
-                row = {
-                    "timestamp": ts_str,
-                    "tag": tag,
-                    "value": float(value),
-                    "unit": s["unit"],
-                    "segment": s["segment"],
-                    "batch_id": batch_id,
-                    "quality": quality,
-                }
-                readings_batch.append(row)
-
-                if quality == 2:
-                    limit_type = "high" if value > s["high_limit"] else "low"
-                    alarms_batch.append({
-                        "timestamp": ts_str,
-                        "tag": tag,
-                        "value": float(value),
-                        "limit_type": limit_type,
-                        "limit_value": s["high_limit"] if limit_type == "high" else s["low_limit"],
-                        "batch_id": batch_id,
-                    })
-
-            if readings_batch:
-                insert_rows(READINGS_TABLE, readings_batch)
-            if alarms_batch:
-                insert_rows(ALARMS_TABLE, alarms_batch)
-
-            count_str = f"{len(readings_batch)} readings"
-            if alarms_batch:
-                count_str += f", {len(alarms_batch)} alarms"
-            print(f"  [{ts_str}] {batch_id}  {count_str}")
+            print(f"  [{ts_str}]  {len(_SEGMENT_SENSORS)} segments ({len(snapshot)} sensors)")
 
             time.sleep(DEFAULT_INTERVAL)
 
@@ -620,11 +513,30 @@ def main():
         default=BACKFILL_SECONDS,
         help=f"Seconds of historical data to backfill (default: {BACKFILL_SECONDS})",
     )
-    parser.add_argument("--host",     default=None, help="FairCom Edge hostname (default: localhost)")
-    parser.add_argument("--port",     type=int, default=None, help="FairCom Edge HTTP port (default: 8080)")
+    parser.add_argument("--host",          default=None, help="FairCom Edge hostname (default: localhost)")
+    parser.add_argument("--port",          type=int, default=None, help="FairCom Edge HTTP port (default: 8080)")
+    parser.add_argument("--modbus-server", default=None, help="Modbus device hostname (default: from config)")
+    parser.add_argument("--modbus-port",   type=int, default=None, help="Modbus device TCP port (default: from config)")
     parser.add_argument("--user",     default=None, help="FairCom username")
     parser.add_argument("--password", default=None, help="FairCom password")
     parser.add_argument("--db",       default=None, help="FairCom database name")
+    parser.add_argument(
+        "--segment",
+        default=None,
+        help="Backfill only this segment (e.g. cold_storage). Default: all segments",
+    )
+    parser.add_argument(
+        "--row-delay",
+        type=float,
+        default=2.0,
+        dest="row_delay",
+        help=(
+            "Seconds to sleep between time-slot rows during backfill (faircom mode).\n"
+            "  2.0 (default) → 31 rows × 2 s ≈ 62 s total, timestamps spread naturally.\n"
+            "  60.0           → real-time cadence (one row per minute, ~31 min total).\n"
+            "  0              → legacy bulk insert (all rows get the same create_ts).\n"
+        ),
+    )
     parser.add_argument("--yes", "-y", action="store_true", help="Accept all defaults non-interactively")
     args = parser.parse_args()
 
@@ -663,9 +575,13 @@ def main():
         print("✓\n")
 
     if args.mode == "setup":
-        create_schema()
+        create_schema(
+            modbus_server=args.modbus_server or MODBUS_CONNECT_HOST,
+            modbus_port=args.modbus_port or MODBUS_PORT,
+        )
     elif args.mode == "backfill":
-        run_backfill(args.seconds, args.output)
+        run_backfill(args.seconds, args.output, segment=args.segment,
+                     row_delay=args.row_delay)
     elif args.mode == "stream":
         run_stream()
 

@@ -1,0 +1,95 @@
+#!/bin/bash
+
+#base install directory for faircomdb package
+faircom_install_dir=/opt/faircomdb
+
+#faircom server process owner
+faircom_user=faircom
+
+#cluster network info
+host1=node01.company.com
+host2=node02.compnay.com
+VIPaddr=10.0.0.100
+VIPnetmask=24
+
+#VMware based stonith configuration
+use_vmware_stonith=0
+vmname1=RHEL8-ClusterNode1
+vmname2=RHEL8-ClusterNode2
+vmip=vmware-host.company.com
+vmlogin=root
+vmpassword=mysecretpassword
+
+
+#First authenticate.  This will prompt for hacluster username and password.  
+#Must be run manually
+#pcs host auth $host1 $host2
+
+#remove all old definitions
+# Not needed with pacemaker 3.1
+pcs cluster destroy --all 
+
+#delete any objects we will be creating
+pcs -f clcfg resource delete faircomdb
+pcs -f clcfg resource delete VIP 
+pcs -f clcfg stonith  delete vmfence
+
+#Define machines in the cluster
+pcs cluster setup faircom $host1 $host2
+
+#start the cluster
+pcs cluster start --all
+
+#create a config file
+pcs cluster cib clcfg
+
+
+# Set up faircomdb resource. Options should be configured for your specific system
+pcs -f clcfg resource create faircomdb ocf:heartbeat:faircomdb binary=${faircom_install_dir}/server/faircom config=${faircom_install_dir}/server/ctsrvr.cfg ctsmon=${faircom_install_dir}/tools/ctsmon faircomdb_adminpass=ADMIN faircomdb_servername=FAIRCOMS faircomdb_working_directory=${faircom_install_dir}/server faircomdb_data_directory=${faircom_install_dir}/data user=${faircom_user} repadm=${faircom_install_dir}/tools/repadm pid=${faircom_install_dir}/server/faircomdb.pid
+
+# faircomdb uses primary/secondary
+pcs -f clcfg resource promotable faircomdb master-max=1 master-node-max=1 clone-max=2 clone-node-max=1 notify=true
+
+# add a monitor for the primary (master)
+pcs -f clcfg resource op add faircomdb monitor timeout=20 interval=11 role=Master
+
+#set timeouts
+pcs -f clcfg resource update faircomdb op promote timeout=120s
+pcs -f clcfg resource update faircomdb op start timeout=120s
+pcs -f clcfg resource update faircomdb op stop timeout=120s
+
+#Create a Virtual IP (VIP) to connect your application to.  
+pcs -f clcfg resource create VIP ocf:heartbeat:IPaddr2 ip=$VIPaddr cidr_netmask=$VIPnetmask op monitor interval=30
+
+#The VIP moves with the master server.
+pcs -f clcfg constraint colocation add VIP with master faircomdb-clone score=INFINITY
+
+# start the master before the VIP
+pcs -f clcfg constraint order faircomdb-clone then start VIP
+
+# System specific fencing.  Must be customized for each system.
+if [ $use_vmware_stonith -eq 1 ]; then
+	pcs -f clcfg stonith create vmfence fence_vmware_soap pcmk_host_map="${host1}:${vmname1};${host2}:${vmname2}" ipaddr=$vmip ssl_insecure=1 login=$vmlogin passwd=$vmpassword
+	pcs -f clcfg property set stonith-enabled=true
+else
+	pcs -f clcfg property set stonith-enabled=false
+endif
+
+# No quorum for only 2 nodes
+pcs -f clcfg property set no-quorum-policy=ignore
+
+# don't failover during normal operations
+pcs -f clcfg resource defaults update resource-stickiness=INFINITY
+
+# Failover on first error
+pcs -f clcfg resource defaults update migration-threshold=1
+
+# allow failed resource to resume being master after 60 seconds
+pcs -f clcfg resource defaults update failure-timeout=60
+
+# cluster starts on boot
+pcs cluster enable --all
+
+#apply above changes
+pcs cluster cib-push clcfg
+

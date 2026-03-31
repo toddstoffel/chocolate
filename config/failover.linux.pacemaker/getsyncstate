@@ -1,0 +1,38 @@
+#!/bin/bash
+
+SERVER_SYNC_ATTR_UNKNOWN=1 # server sync mode not stored in cluster
+SERVER_IS_PRIMARY_IN_ASYNC_MODE=2 # server is primary server in async mode
+SERVER_IS_PRIMARY_IN_SYNC_MODE=3 # server is primary server in sync mode
+SERVER_IS_SECONDARY_WITH_PRIMARY_ASYNC=4 # server is secondary and primary is in async mode
+SERVER_IS_SECONDARY_WITH_PRIMARY_SYNC=5 # server is secondary and primary is in sync mode
+
+attr=$(crm_attribute -G --name promotestate -q)
+if [ "$attr" == "" ]; then
+	# attribute not set or error getting attribute
+	rc=$SERVER_SYNC_ATTR_UNKNOWN
+	echo rc=$rc
+	exit $rc
+fi
+
+echo $attr
+primarynode=$(echo $attr | python3 -c "import sys, json; print(json.load(sys.stdin)['node'])")
+sync=$(echo $attr | python3 -c "import sys, json; print(json.load(sys.stdin)['sync'])")
+node=$(hostname)
+if [ "$sync" == "y" ]; then
+	if [ "$primarynode" == "$node" ]; then
+		rc=$SERVER_IS_PRIMARY_IN_SYNC_MODE
+	else
+		rc=$SERVER_IS_SECONDARY_WITH_PRIMARY_SYNC
+	fi
+elif [ "$sync" == "n" ]; then
+	if [ "$primarynode" == "$node" ]; then
+		rc=$SERVER_IS_PRIMARY_IN_ASYNC_MODE
+	else
+		rc=$SERVER_IS_SECONDARY_WITH_PRIMARY_ASYNC
+	fi
+else
+	rc=$SERVER_SYNC_ATTR_UNKNOWN
+fi
+echo rc=$rc
+exit $rc
+

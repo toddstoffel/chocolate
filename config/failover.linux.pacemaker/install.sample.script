@@ -1,0 +1,18 @@
+#!/bin/bash
+
+echo Preparing package...
+#copy pacemaker config files into config/
+cp ctagent.json ..
+cp ctreplagent.cfg ..
+cp replSync.xml ..
+
+echo Creating symbolic links for FairCom utilities...
+ln -s /opt/faircomdb/tools/ctstat /usr/local/bin/ctstat
+ln -s /opt/faircomdb/tools/ctstop /usr/local/bin/ctstop
+ln -s /opt/faircomdb/tools/ctsmon /usr/local/bin/ctsmon
+ln -s /opt/faircomdb/tools/repadm /usr/local/bin/repadm
+ln -s getsyncstate /usr/local/bin/getsyncstate
+ln -s setsyncstate /usr/local/bin/setsyncstate
+
+echo FairCom installation completed
+

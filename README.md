@@ -1,16 +1,32 @@
-# Chocolate Factory – FairCom Edge Data Simulator
+# Chocolate Factory – FairCom Edge Modbus Simulator
 
-A Python-based simulator that generates time-series sensor data for a large-scale
-chocolate manufacturing facility and writes it to [FairCom Edge](https://www.faircom.com/edge)
-via its JSON API. Data can alternatively be exported to JSON or CSV files without any
-FairCom dependency.
+A Python-based Modbus TCP simulator and data backfill tool for
+[FairCom Edge](https://www.faircom.com/edge). The simulator exposes 3,982
+chocolate-factory sensors as Modbus holding registers so that FairCom Edge's
+native Modbus connector can collect and store live data into integration tables
+automatically. `generate_data.py` creates the integration table schema and
+backfills those tables with realistic historical sensor data.
+
+## Architecture
+
+```
+  modbus_simulator.py          FairCom Edge              FairCom Edge DB
+  ─────────────────────        ──────────────────────     ──────────────────
+  Modbus TCP server       ←→   Modbus connector       →   integration tables
+  (3,982 sensors as            (polls registers,           sensor_readings
+   holding registers)           stores readings)            sensor_alarms
+                                                            batch_log
+  generate_data.py    ─────────────────────────────────►   sensor_registry
+  (schema setup + backfill via JSON API)
+```
 
 ## Files
 
 | File | Purpose |
 |---|---|
 | `config.py` | Sensor definitions, simulation parameters, and FairCom connection defaults |
-| `generate_data.py` | Data generator — schema setup, backfill, live stream, and file export |
+| `generate_data.py` | Creates integration table schema, backfills historical data, file export |
+| `modbus_simulator.py` | Modbus TCP server — exposes all sensors as IEEE 754 float32 holding registers |
 | `docker-compose.yml` | Runs FairCom Edge locally with a persistent data volume |
 
 ## Sensor coverage (3,982 tags)
@@ -39,10 +55,11 @@ shared plant systems.
 ## Requirements
 
 ```bash
-pip install requests
+pip install pymodbus>=3.0 requests
 ```
 
-`requests` is only needed when writing to FairCom Edge. JSON and CSV export work without it.
+`requests` is only needed when connecting to FairCom Edge. JSON and CSV export work without it.
+`pymodbus` is only needed to run the Modbus simulator.
 
 ## Quick start
 
@@ -50,46 +67,65 @@ pip install requests
 # 1. Start FairCom Edge
 docker compose up -d
 
-# 2. Create the schema and seed the sensor registry (interactive — prompts for credentials)
+# 2. Create integration tables and seed the sensor registry
 python3 generate_data.py --mode setup
 
-# 3. Same as above, using all defaults non-interactively
-python3 generate_data.py --mode setup --yes
-
-# 4. Backfill 30 minutes of historical data and push to FairCom (default behavior)
+# 3. Backfill 30 minutes of historical data into the integration tables (default)
 python3 generate_data.py
 
-# 5. Backfill to JSON files (no FairCom connection required)
+# 4. Start the Modbus TCP simulator
+python3 modbus_simulator.py
+
+# 5. In FairCom Edge Explorer, configure a Modbus connector:
+#    - Host: localhost (or host.docker.internal from inside docker)  Port: 502
+#    - Register type: ieeefloat32ABCD   Data length: 2   Unit ID: 1
+#    - Sensor i → address i*2  (see modbus_simulator.py for the full mapping)
+#    Alternatively, run the helper to register the first 100 sensors automatically:
+python3 modbus_simulator.py --setup-connector
+```
+
+### File export (no FairCom required)
+
+```bash
+# Backfill to JSON files
 python3 generate_data.py --output json
 
-# 6. Backfill to CSV files
+# Backfill to CSV files
 python3 generate_data.py --output csv
 
-# 7. Backfill a custom time range
+# Backfill a custom time range
 python3 generate_data.py --seconds 7200
-
-# 8. Stream live data to FairCom Edge
-python3 generate_data.py --mode stream
 ```
 
 ## Connection settings
 
-The script prompts for connection details when FairCom is needed. Defaults are read from
-the top of `config.py`:
+Defaults are read from the top of `config.py`:
 
 ```python
 FAIRCOM_HOST     = "localhost"
 FAIRCOM_PORT     = 8080
-FAIRCOM_DB       = "chocolate_factory"
+FAIRCOM_DB       = "faircom"
 FAIRCOM_USER     = "admin"
 FAIRCOM_PASSWORD = "ADMIN"
 ```
 
-Connection parameters can also be passed directly on the command line:
+Connection parameters can also be passed on the command line:
 
 ```bash
 python3 generate_data.py --host 192.168.1.50 --user admin --yes
 ```
+
+## Modbus register layout
+
+Each sensor occupies two consecutive 16-bit holding registers encoding an IEEE 754
+float32 value in ABCD (big-endian) byte order — matching FairCom Edge's
+`"modbusRegisterType": "ieeefloat32ABCD"` setting.
+
+| Sensor index | Register addresses |
+|---|---|
+| 0 | 0, 1 |
+| 1 | 2, 3 |
+| i | i×2, i×2+1 |
 
 ## Database schema
 

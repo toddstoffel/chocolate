@@ -1,0 +1,11 @@
+{
+	"log_file": "agentLog.txt",
+	"memphis_server_name": "MEMPHIS",
+	"memphis_sql_port": 7597,
+	"memphis_host": "localhost",
+	"memphis_database": "MEMPHIS",
+	"inactive_timeout": 600,
+	"accept_conn": true,
+	"dbengine_behind_nat": false,
+	"use_replication_agent_manager": true
+}

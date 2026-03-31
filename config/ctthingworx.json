@@ -1,0 +1,12 @@
+{
+	"thingworxHost": "ThingWorx host",
+	"thingworxPort": 80,
+	"thingworxAppkey": "ThingWorx app key",
+	"thingworxSSLCertificate": "./thingworx/fccert.pem",
+	"thingworxThings": [
+		{
+			"thingName": "FairComThing2",
+			"thingCreator": "FairComThing"
+		}
+	]
+}

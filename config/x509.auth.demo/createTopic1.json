@@ -1,0 +1,9 @@
+{
+  "api": "mq",
+  "authToken": "TnV4jnpzfGkc9q4ydkMeljW17BvpPEMSSTSalTLUYVM0VsF9EjMw5YlOY7IqSiQI",
+  "action": "configureTopic",
+  "params": {
+    "databaseName": "faircom",
+    "topic": "topic1"
+  }
+}

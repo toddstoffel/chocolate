@@ -1,0 +1,756 @@
+#!/bin/sh
+#
+#
+#	faircomdb OCF RA. 
+#
+# Copyright (c) 2022 FairCom Corporation   <support@faircom.com>
+#                    All Rights Reserved.
+#
+# This program is free software; you can redistribute it and/or modify
+# it under the terms of version 2 of the GNU General Public License as
+# published by the Free Software Foundation.
+#
+# This program is distributed in the hope that it would be useful, but
+# WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.
+#
+# Further, this software is distributed without any warranty that it is
+# free of the rightful claim of any third person regarding infringement
+# or the like.  Any license provided herein, whether implied or
+# otherwise, applies only to this software file.  Patent licenses, if
+# any, provided herein do not apply to combinations of this program with
+# other software, or any other product whatsoever.
+#
+# You should have received a copy of the GNU General Public License
+# along with this program; if not, write the Free Software Foundation,
+# Inc., 59 Temple Place - Suite 330, Boston MA 02111-1307, USA.
+#
+
+#######################################################################
+# Initialization:
+
+: ${OCF_FUNCTIONS_DIR=${OCF_ROOT}/lib/heartbeat}
+. ${OCF_FUNCTIONS_DIR}/ocf-shellfuncs
+
+# Use runuser if available for SELinux.
+if [ -x /sbin/runuser ]; then
+	SU=runuser
+else
+	SU=su
+fi
+
+#######################################################################
+# Defaults
+
+clusterdebug=2
+faircomdb_op="undef"
+DEFAULT_PROMOTE=100
+export LD_LIBRARY_PATH=/opt/faircomdb/server
+
+OCF_RESKEY_user_default="faircom"
+OCF_RESKEY_group_default="faircom"
+OCF_RESKEY_config_default="/opt/faircomdb/config/ctsrvr.cfg"
+
+OCF_RESKEY_binary_default="faircom"
+OCF_RESKEY_pid_default="/opt/faircomdb/server/faircomdb.pid"
+
+OCF_RESKEY_faircomdb_adminpass_default="ADMIN"
+OCF_RESKEY_faircomdb_monitor_user_default="ADMIN"
+OCF_RESKEY_faircomdb_monitor_userpass_default="ADMIN"
+OCF_RESKEY_faircomdb_port_default="5597"
+OCF_RESKEY_faircomdb_servername_default="FAIRCOMS"
+OCF_RESKEY_faircomdb_host_default="127.0.0.1"
+OCF_RESKEY_faircomdb_working_directory_default="/opt/faircomdb/server"
+OCF_RESKEY_faircomdb_data_directory_default="/opt/faircomdb/data"
+
+OCF_RESKEY_faircomdb_heartbeat_tcpip_default="true"
+
+OCF_RESKEY_ctsmon_default=`PATH=/usr/local/bin:$PATH which ctsmon 2> /dev/null`
+OCF_RESKEY_repadm_default=`PATH=/usr/local/bin:$PATH which repadm 2> /dev/null`
+
+
+: ${OCF_RESKEY_binary=${OCF_RESKEY_binary_default}}
+: ${OCF_RESKEY_pid=${OCF_RESKEY_pid_default}}
+: ${OCF_RESKEY_user=${OCF_RESKEY_user_default}}
+: ${OCF_RESKEY_group=${OCF_RESKEY_group_default}}
+
+: ${OCF_RESKEY_faircomdb_adminpass=${OCF_RESKEY_faircomdb_adminpass_default}}
+: ${OCF_RESKEY_faircomdb_monitor_user=${OCF_RESKEY_faircomdb_monitor_user_default}}
+: ${OCF_RESKEY_faircomdb_monitor_userpass=${OCF_RESKEY_faircomdb_monitor_userpass_default}}
+: ${OCF_RESKEY_faircomdb_port=${OCF_RESKEY_faircomdb_port_default}}
+: ${OCF_RESKEY_faircomdb_servername=${OCF_RESKEY_faircomdb_servername_default}}
+: ${OCF_RESKEY_faircomdb_host=${OCF_RESKEY_faircomdb_host_default}}
+: ${OCF_RESKEY_faircomdb_working_directory=${OCF_RESKEY_faircomdb_working_directory_default}}
+: ${OCF_RESKEY_faircomdb_data_directory=${OCF_RESKEY_faircomdb_data_directory_default}}
+
+: ${OCF_RESKEY_faircomdb_heartbeat_tcpip=${OCF_RESKEY_faircomdb_heartbeat_tcpip_default}}
+
+: ${OCF_RESKEY_ctsmon=${OCF_RESKEY_ctsmon_default}}
+: ${OCF_RESKEY_repadm=${OCF_RESKEY_repadm_default}}
+
+#######################################################################
+# Description 
+
+faircomdb_meta_data() {
+	faircomdb_log meta_data: enter
+	cat <<END
+<?xml version="1.0"?>
+<!DOCTYPE resource-agent SYSTEM "ra-api-1.dtd">
+<resource-agent name="faircomdb">
+<version>1.0</version>
+
+<longdesc lang="en">Resource agent script for FairComDB Database Server</longdesc>
+<shortdesc lang="en">FairComDB resource agent</shortdesc>
+
+<parameters>
+
+<parameter name="binary" unique="0" required="0">
+	<longdesc lang="en">Full path to the FairComDB binary</longdesc>
+	<shortdesc lang="en">FairComDB binary</shortdesc>
+	<content type="string" default="${OCF_RESKEY_binary_default}" />
+</parameter>
+
+<parameter name="config" required="0" unique="0">
+	<longdesc lang="en">Full path to a FairComDB configuration directory or configuration file</longdesc>
+	<shortdesc lang="en">FairComDB configuration</shortdesc>
+	<content type="string" default="${OCF_RESKEY_config_default}"/>
+</parameter>
+
+<parameter name="pid" required="0" unique="0">
+	<longdesc lang="en">File to read running process PID</longdesc>
+	<shortdesc lang="en">Process PID file</shortdesc>
+	<content type="string" default="${OCF_RESKEY_pid_default}" />
+</parameter>
+
+<parameter name="user" unique="0" required="0">
+	<longdesc lang="en">User name or id FairComDB will run under</longdesc>
+	<shortdesc lang="en">FairComDB SQL user</shortdesc>
+	<content type="string" default="${OCF_RESKEY_user_default}" />
+</parameter>
+
+<parameter name="group" unique="0" required="0">
+	<longdesc lang="en">Group name or id FairComDB will run under</longdesc>
+	<shortdesc lang="en">FairComDB SQL group</shortdesc>
+	<content type="string" default="${OCF_RESKEY_group_default}" />
+</parameter>
+
+<parameter name="faircomdb_adminpass" unique="0" required="1">
+	<longdesc lang="en">FairComDB ADMIN password</longdesc>
+	<shortdesc lang="en">FairComDB ADMIN password</shortdesc>
+	<content type="string" default="${OCF_RESKEY_faircomdb_adminpass_default}" />
+</parameter>
+
+<parameter name="faircomdb_monitor_user" unique="0" required="0">
+	<longdesc lang="en">FairComDB user name to connect for monitoring</longdesc>
+	<shortdesc lang="en">FairComDB user ID</shortdesc>
+	<content type="string" default="${OCF_RESKEY_faircomdb_monitor_user_default}" />
+</parameter>
+
+<parameter name="faircomdb_monitor_userpass" unique="0" required="0">
+	<longdesc lang="en">FairComDB password to connect for monitoring</longdesc>
+	<shortdesc lang="en">FairComDB user password</shortdesc>
+	<content type="string" default="${OCF_RESKEY_faircomdb_monitor_userpass_default}" />
+</parameter>
+
+<parameter name="faircomdb_servername" unique="0" required="1">
+	<longdesc lang="en">FairComDB server name to connect for monitoringi</longdesc>
+	<shortdesc lang="en">FairComDB server name</shortdesc>
+	<content type="string" default="${OCF_RESKEY_faircomdb_servername_default}" />
+</parameter>
+
+<parameter name="faircomdb_host" unique="0" required="0">
+	<longdesc lang="en">FairComDB host name to connect for monitoring</longdesc>
+	<shortdesc lang="en">FairComDB host name</shortdesc>
+	<content type="string" default="${OCF_RESKEY_faircomdb_host_default}" />
+</parameter>
+
+<parameter name="faircomdb_working_directory" unique="0" required="1">
+	<longdesc lang="en">FairComDB server working directory. This must be writable for FairComDB to start and operate</longdesc>
+	<shortdesc lang="en">FairComDB Working Direcotry</shortdesc>
+	<content type="string" default="${OCF_RESKEY_faircomdb_working_directory_default}" />
+</parameter>
+
+<parameter name="faircomdb_data_directory" unique="0" required="1">
+	<longdesc lang="en">FairComDB server data directory. This must be writable for FairComDB to start and operate</longdesc>
+	<shortdesc lang="en">FairComDB Data Directory</shortdesc>
+	<content type="string" default="${OCF_RESKEY_faircomdb_data_directory_default}" />
+</parameter>
+
+<parameter name="faircomdb_heartbeat_tcpip" unique="0" required="0">
+        <longdesc lang="en">FairComDB heartbeat option that forces TCPIP connections when enabled. Setting false will use a shared memory heartbeat that will fallback to TCPIP</longdesc>
+        <shortdesc lang="en">FairComDB heartbeat uses tcpip instead of shared memory</shortdesc>
+        <content type="boolean" default="${OCF_RESKEY_faircomdb_heartbeat_tcpip_default}" />
+</parameter>
+
+<parameter name="ctsmon" unique="0" required="0">
+	<longdesc lang="en">Path to FairComDB ctsmon monitor utility. Assume located in \$PATH if not provided</longdesc>
+	<shortdesc lang="en">ctsmon location</shortdesc>
+	<content type="string" default="${OCF_RESKEY_ctsmon_default}" />
+</parameter>
+
+<parameter name="repadm" unique="0" required="0">
+	<longdesc lang="en">Path to FairComDB Replication Agent Administrator utility. Assume located in \$PATH if not provided</longdesc>
+	<shortdesc lang="en">repadm location</shortdesc>
+	<content type="string" default="${OCF_RESKEY_repadm_default}" />
+</parameter>
+
+</parameters>
+
+<actions>
+<action name="start"        timeout="120s" />
+<action name="stop"         timeout="120s" />
+<action name="monitor"      timeout="20s" interval="10s" depth="0" />
+<action name="notify"       timeout="30s" />
+<action name="status"       timeout="30s" depth="0" />
+<action name="meta-data"    timeout="5s"  />
+<action name="validate-all" timeout="20s" />
+<action name="promote" timeout="120s" />
+<action name="demote"       timeout="120s"  />
+</actions>
+
+</resource-agent>
+END
+	faircomdb_log meta_data: exit
+}
+
+#######################################################################
+# Functions
+
+faircomdb_usage() {
+	cat <<END
+usage: $0 {start|stop|status|monitor|validate-all|meta-data|promote|demote}
+
+Expects to have a fully populated OCF RA-compliant environment set.
+END
+}
+#Debug logging
+faircomdb_log() {
+	if [ $clusterdebug -eq 0 ]; then
+		ocf_log debug "$*"
+		return
+	fi
+	ocf_log info "$*"
+}
+start_server() {
+	#Start server process as $OCF_RESKEY_user in faircomdb_working_directory and write server PID to $OCF_RESKEY_pid	
+	$SU $OCF_RESKEY_user -c "LD_LIBRARY_PATH=.;export LD_LIBRARY_PATH;cd ${OCF_RESKEY_faircomdb_working_directory}; \
+		${OCF_RESKEY_binary} 1> ${OCF_RESKEY_faircomdb_data_directory}/server.log 2>&1 & echo \$!>${OCF_RESKEY_pid}"
+}
+
+faircomdb_start() {
+	faircomdb_op=start
+	local rc=0
+	faircomdb_log start: enter
+	#check that FairComDB environment exists
+	faircomdb_validate
+	rc=$?
+	if [ $rc -ne 0 ]; then
+		faircomdb_log start: exit, validate failed
+		return $rc
+	fi
+	ocf_log info "faircomdb_validate completed with success"
+
+	#if already running, return success
+	faircomdb_monitor_internal
+	rc=$?
+	if [ $rc -eq $OCF_SUCCESS ] || [ $rc -eq $OCF_RUNNING_MASTER ]; then
+		ocf_log info "FairComDB is already running"
+		faircomdb_log start: exit, already running
+		return $OCF_SUCCESS
+	fi
+
+	# Remove ${OCF_RESKEY_pid} if it exists
+	faircomdb_log start: Deleting PID  
+	faircomdb_cleanup_pid
+	ocf_run -q $SU $OCF_RESKEY_user -c "touch ${OCF_RESKEY_pid}"
+
+	cd ${OCF_RESKEY_faircomdb_working_directory}
+
+	# write server starting state to cluster.ini
+	ocf_run -q $SU $OCF_RESKEY_user -c "echo 0 > ${OCF_RESKEY_faircomdb_data_directory}/cluster.ini"
+
+	#start FairComDB
+	start_server
+
+	#wait until startup
+	local i=0
+	while true ; do
+		faircomdb_log "waiting for startup..."
+		check_startup_state
+		rc=$?
+		if [ $rc -eq $OCF_ERR_GENERIC ]; then
+			return $rc
+		elif [ $rc -eq $OCF_SUCCESS ]; then
+			break
+		fi
+		sleep 1
+		i=$(expr $i + 1)
+	done
+
+	faircomdb_log start: exit, success
+	return $OCF_SUCCESS
+}
+
+faircomdb_cleanup_pid() {
+
+	faircomdb_log "Deleting PID file"
+	rm -f ${OCF_RESKEY_pid}
+
+}
+
+faircomdb_stop() {
+	local pid=0
+	local timeout=25
+	local rc
+	local stopped
+	local i
+	local starttime=$(date +%s)
+	local elapsed
+
+	faircomdb_log stop: enter
+	#We want to stop the server before the stop command times out.
+	if [ -n "$OCF_RESKEY_CRM_meta_timeout" ]; then
+		# we want to timeout 5 seconds before pacemaker times out
+		timeout=$((($OCF_RESKEY_CRM_meta_timeout/1000) - 5))
+		timeout=$(($starttime + $timeout))
+
+	fi
+
+
+	if [ -f ${OCF_RESKEY_pid} ] && [ "$(cat ${OCF_RESKEY_pid})" != "" ]; then
+		pid=$(cat ${OCF_RESKEY_pid})
+	else
+		ocf_log info "stop: pid file ${OCF_RESKEY_pid} does not exist"
+		return $OCF_SUCCESS
+	fi
+
+	is_server_alive
+	rc=$?
+	case "$rc" in
+		"$OCF_SUCCESS")
+			faircomdb_log "faircomdb is currently running"
+			;;
+		"$OCF_NOT_RUNNING")
+			ocf_log info "faircomdb is already stopped"
+			faircomdb_cleanup_pid
+			return $OCF_SUCCESS
+			;;
+		*)
+			#error, check if pid is gone	
+			ocf_log info "monitor returned $rc"
+			kill -0 $pid
+			if [ $? != 0 ]; then
+				ocf_log info "pid $pid has exited"
+				faircomdb_cleanup_pid
+				return $OCF_SUCCESS
+			fi
+			;;
+	esac
+
+	ocf_log info "Stopping Service ..."
+	#Send SIGTERM
+	ocf_run -q -warn kill $pid
+		
+	stopped=N
+	i=0
+	while [ $stopped = N  ]; do
+		#Check if we're close to pacemaker timeout
+		i=$(date +%s)
+		if [ $i -ge $timeout ]; then
+			#Kill the process before pacemaker timeout
+			break
+		fi
+		ocf_run -q -info kill -0 $pid
+		
+		rc=$?
+		if [ $rc -ne 0 ]; then
+			stopped=Y
+		fi
+		ocf_log info "Waiting for pid $pid to stop ... "
+		sleep 1
+	done
+
+	if [ $stopped = N ]; then
+		ocf_log warn "exceeded clean shutdown time limit. Using SIGKILL."
+		kill -9 $pid
+		if [ $? -ne 0 ];  then
+			ocf_log err "SIGKILL failed on pid $pid"
+			return $OCF_ERR_GENERIC
+		fi
+	fi
+	
+	faircomdb_cleanup_pid
+	
+	faircomdb_log stop: exit, success
+	return $OCF_SUCCESS
+}
+
+faircomdb_check_role() {
+	SERVER_ROLE_FILE=${OCF_RESKEY_faircomdb_data_directory}/serverrole.ini
+	if [ -f $SERVER_ROLE_FILE ]; then
+		local serverrole=$(head -n 1 $SERVER_ROLE_FILE)
+		return $serverrole
+	else
+		ocf_log err "Unable to locate $SERVER_ROLE_FILE. check faircomdb_data_directory is set correctly"
+		return 0
+	fi
+}
+
+faircomdb_notify() {
+	local type="${OCF_RESKEY_CRM_meta_notify_type}"
+	local op="${OCF_RESKEY_CRM_meta_notify_operation}"
+	faircomdb_log notify: type=$type op=$op
+	faircomdb_log notify: type=$type op=$op master=$OCF_RESKEY_CRM_meta_notify_master_uname promote=$OCF_RESKEY_CRM_meta_notify_promote_uname
+	return $OCF_SUCCESS
+}
+
+check_startup_state() {
+	local serverstate=$(head -n 1 ${OCF_RESKEY_faircomdb_data_directory}/cluster.ini 2>/dev/null)
+	is_server_alive
+	if [ $? -ne $OCF_SUCCESS ]; then
+		return $OCF_ERR_GENERIC
+	fi
+	case $serverstate in
+	 0)
+		faircomdb_log startup server state 0
+		return $OCF_NOT_RUNNING
+		;;
+	 1)
+		faircomdb_log startup server state 1
+		return $OCF_SUCCESS
+		;;
+	 2)
+		faircomdb_log startup server state "$serverstate", master
+		return $OCF_RUNNING_MASTER
+		;;
+	 3)
+		faircomdb_log startup: server state "$serverstate", not master
+		return $OCF_SUCCESS
+		;;
+	 4)
+		return $OCF_SUCCESS
+		;;
+
+	 *)
+		ocf_log err  "startup found unexpected cluster.ini state $serverstate"
+		return $OCF_ERR_GENERIC
+		;;
+	esac
+}
+
+is_server_alive() {
+
+	if [ -f ${OCF_RESKEY_pid} ] && [ "$(cat ${OCF_RESKEY_pid})" != "" ]; then
+		kill -0 $(cat ${OCF_RESKEY_pid})
+		if [ $? != 0 ]; then
+			ocf_log warn is_server_alive pid $(cat ${OCF_RESKEY_pid}) has gone away
+			return $OCF_ERR_GENERIC
+		else
+			faircomdb_log is_server_alive: pid $(cat ${OCF_RESKEY_pid}) exists
+			return $OCF_SUCCESS
+		fi
+	else
+		faircomdb_log is_server_alive: pid file ${OCF_RESKEY_pid} does not exist
+		return $OCF_NOT_RUNNING
+	fi
+}
+
+check_server_connection() {
+	# Call ctsmon and see if FairComDB accepting logons
+	local servername
+	local ctsmon_options=" -u ${OCF_RESKEY_faircomdb_monitor_user} -p ${OCF_RESKEY_faircomdb_monitor_userpass} -t 3 -c 1"
+	# force TCPIP?
+        # This can detect some types of local routing errors that may occur.
+
+        if [ ${OCF_RESKEY_faircomdb_heartbeat_tcpip} == "true" ]; then
+                servername=${OCF_RESKEY_faircomdb_servername}^F_TCPIP
+        else
+                servername=${OCF_RESKEY_faircomdb_servername}
+        fi
+
+
+	ocf_run -q -info $SU $OCF_RESKEY_user -c "${OCF_RESKEY_ctsmon} ${ctsmon_options} -s $servername"
+	return $?
+}
+
+check_agent_state() {
+	local repadm_options=" -c getstate -u ${OCF_RESKEY_faircomdb_monitor_user} -p ${OCF_RESKEY_faircomdb_monitor_userpass} -s ${OCF_RESKEY_faircomdb_servername} -i 1 1"
+	ocf_run -q -info $SU $OCF_RESKEY_user -c "${OCF_RESKEY_repadm} ${repadm_options}"
+	return $?
+}
+
+#Save off all files prior to recovery
+#add application specific files here
+debug_recovery_backup() {
+	backupdir=${OCF_RESKEY_faircomdb_data_directory}/recovery_backup
+
+	#remove old backup and create new directory
+	rm -rf $backupdir
+	mkdir $backupdir
+
+	#save off transaction logs
+	cp ${OCF_RESKEY_faircomdb_data_directory}/../tranlogs/S0*.FCS $backupdir
+	cp ${OCF_RESKEY_faircomdb_data_directory}/../tranlogs/L0*.FCS $backupdir
+	ls ${OCF_RESKEY_faircomdb_data_directory}/../tranlogs/L0*.FCA 1> /dev/null 2>&1
+	if [ $? -eq 0 ]; then
+		mv ${OCF_RESKEY_faircomdb_data_directory}/../tranlogs/L0*.FCA $backupdir
+	fi
+
+	#save general faircomdb files
+	cp ${OCF_RESKEY_faircomdb_data_directory}/FAIRCOM.FCS $backupdir
+	cp ${OCF_RESKEY_faircomdb_data_directory}/SYSLOG*.FCS $backupdir
+	cp ${OCF_RESKEY_faircomdb_data_directory}/SEQUENCE*.FCS $backupdir
+	cp ${OCF_RESKEY_faircomdb_data_directory}/DFRKSTATE*.FCS $backupdir
+	cp ${OCF_RESKEY_faircomdb_data_directory}/REPL*.FCS $backupdir
+	cp ${OCF_RESKEY_faircomdb_data_directory}/ctdbdict.fsd $backupdir
+
+	#application specific files & directories
+	mkdir $backupdir/deposits.dbs
+	cp ${OCF_RESKEY_faircomdb_data_directory}/deposits.dbs/* $backupdir/deposits.dbs
+	mkdir $backupdir/ctreeSQL.dbs
+	mkdir $backupdir/ctreeSQL.dbs/SQL_SYS
+	cp ${OCF_RESKEY_faircomdb_data_directory}/ctreeSQL.dbs/* $backupdir/ctreeSQL.dbs
+	cp ${OCF_RESKEY_faircomdb_data_directory}/ctreeSQL.dbs/SQL_SYS/* $backupdir/ctreeSQL.dbs/SQL_SYS
+	chown -R ${OCF_RESKEY_user}:${OCF_RESKEY_user} $backupdir
+}
+
+faircomdb_monitor() {
+	local rc
+	faircomdb_op=monitor
+	faircomdb_monitor_internal
+	rc=$?
+	if [ $rc -eq $OCF_SUCCESS ] || [ $rc -eq $OCF_RUNNING_MASTER ]; then
+		#set default master preference
+		crm_master -l reboot -v $DEFAULT_PROMOTE 
+	else
+		#Remove master preference
+		crm_master -l reboot -D 
+	fi	
+	return $rc
+}
+
+faircomdb_monitor_internal() {
+	local rc
+	local serverstate
+	local role
+	faircomdb_log monitor: enter
+	faircomdb_log monitor: master=${OCF_RESKEY_CRM_meta_notify_master_uname}
+		
+	# Options for additional API call check
+	#ctsmon_options_api=" -u ${OCF_RESKEY_faircomdb_monitor_user} -p ${OCF_RESKEY_faircomdb_monitor_userpass} -s ${OCF_RESKEY_faircomdb_servername} -t 10 -c 1 -a getappname"
+
+	is_server_alive
+	rc=$?
+	if [ $rc -ne $OCF_SUCCESS ]; then
+		#PID IS GONE. 
+		if [ $rc -eq $OCF_ERR_GENERIC ] && [ "$faircomdb_op" = "monitor" ]; then
+			#Process died unexpectedly
+			if [ $clusterdebug -gt 1  ]; then
+				debug_recovery_backup
+			fi
+		fi
+		
+		faircomdb_log monitor: exit, server not running.
+		return $rc
+	fi
+
+	if [ -f ${OCF_RESKEY_faircomdb_data_directory}/cluster.ini ]; then
+		#shortcut for startup states
+		serverstate=$(head -n 1 ${OCF_RESKEY_faircomdb_data_directory}/cluster.ini 2>/dev/null)
+		case $serverstate in
+			[01])
+				faircomdb_log monitor: exit, server state $serverstate
+				return $OCF_SUCCESS
+				;;
+			2)
+				faircomdb_log monitor: exit, server state 2, master
+				return $OCF_RUNNING_MASTER
+				;;
+			[34])
+				# server should now be fully up
+				# bypass this check until next server startup
+				rm ${OCF_RESKEY_faircomdb_data_directory}/cluster.ini
+				break;
+				;;
+			*)
+				return $OCF_ERR_CONFIGURED
+				;;
+		esac
+	fi
+	
+
+	
+	check_server_connection
+	rc=$?
+	if [ $rc -ne $OCF_SUCCESS ]; then
+		ocf_log err "FairComDB is down: " $rc
+		return $OCF_ERR_GENERIC
+	fi 
+	faircomdb_log "monitor: connections are up"
+
+	faircomdb_check_role
+	role=$?
+	if [ $role -eq 1 ]; then
+		faircomdb_log monitor: exit, server state "$serverstate", is master
+		return $OCF_RUNNING_MASTER
+	elif [ $role -eq 0 ]; then
+		return $OCF_ERR_CONFIGURED
+	elif [ $role -eq 3 ]; then
+		#agent startup waiting for primary
+		return $OCF_SUCCESS
+	fi
+	check_agent_state
+	rc=$?
+	if [ $rc -ne 0 ]; then
+		ocf_log err "monitor: replication agent not responding"
+		return $OCF_ERR_GENERIC
+	fi
+
+	faircomdb_log monitor: exit, not master
+	return $OCF_SUCCESS
+	
+}
+
+faircomdb_validate() {
+	faircomdb_log validate: enter
+	# Make sure the binary exists
+	check_binary "${OCF_RESKEY_binary}"
+	ocf_log info "Binary exists"
+
+	# Is the server working directory writable? 
+	working_dir=`dirname "$OCF_RESKEY_working_directory"`
+	$SU $OCF_REKEY_user -c "touch "$working_dir/$$""
+	if [ $? != 0 ]; then
+		ocf_log err "Working directory \"$OCF_RESKEY_working_dirctory\" is not writable"
+		return $OCF_ERR_ARGS
+	fi
+	rm "$working_dir/$$"
+	ocf_log info "FairComDB working directory is writable"
+
+	#Is the server local directory writable?
+	local_dir=`dirname "$OCF_RESKEY_faircomdb_data_directory"`
+	$SU $OCF_REKEY_user -c "touch "$local_dir/$$""
+	if [ $? != 0 ]; then
+		ocf_log err "Data directory \"$OCF_RESKEY_faircomdb_data_dirctory\" is not writable"
+		return $OCF_ERR_ARGS
+	fi
+	rm "$local_dir/$$"
+	ocf_log info "FairComDB data directory is writable"
+
+	faircomdb_log validate: exit, success
+	return $OCF_SUCCESS
+}
+
+repl_stop() {
+	local rc
+	faircomdb_log replstop: enter
+
+	ocf_log info "stopping replication agent"
+	repl_shut_param="-c promoteserver -s ${OCF_RESKEY_faircomdb_servername} -u admin -p ${OCF_RESKEY_faircomdb_adminpass}"
+	ocf_run -q -info $SU $OCF_RESKEY_user -c "${OCF_RESKEY_repadm} ${repl_shut_param}"
+	rc=$?
+	if [ $rc -ne 0 ]; then
+		ocf_log err repl_stop: promoteserver returned $rc
+		return $OCF_ERR_GENERIC
+	fi
+
+	faircomdb_log replstop: exit, rc=$rc
+	return $OCF_SUCCESS
+}
+
+faircomdb_promote() {
+	local rc=$OCF_SUCCESS
+	local startup=0
+	local serverstate
+	local role
+	faircomdb_log promote: enter
+	if [ -f ${OCF_RESKEY_faircomdb_data_directory}/cluster.ini ]; then
+		serverstate=$(head -n 1 ${OCF_RESKEY_faircomdb_data_directory}/cluster.ini 2>/dev/null)
+		if [ $serverstate -eq 1 ]; then
+			#Only set cluster.ini at startup
+			ocf_run -q $SU $OCF_RESKEY_user -c "echo 2 > ${OCF_RESKEY_faircomdb_data_directory}/cluster.ini"
+			startup=1
+		fi
+	fi
+
+	faircomdb_check_role
+	role=$?
+	if [ $role -eq 1 ]; then
+		#Already master
+		faircomdb_log promote: exit
+		return $OCF_SUCCESS;
+	elif [ $role -ne 2 ]; then
+		ocf_log warn "promote found unexpected role $role"	
+	fi
+
+	if [ $startup -eq 0 ]; then
+		repl_stop
+		rc=$?
+	fi
+	faircomdb_log promote: exit
+	return $rc
+}
+
+faircomdb_demote() {
+	local rc
+	local role
+	faircomdb_log demote: enter
+	faircomdb_check_role
+	role=$?
+	if [ $role -ge 2 ]; then
+		#Not master
+		return $OCF_SUCCESS;
+	fi
+
+
+	repl_demote_param="-c demoteserver -s ${OCF_RESKEY_faircomdb_servername} -u admin -p ${OCF_RESKEY_faircomdb_adminpass}"
+	ocf_run -q -info $SU $OCF_RESKEY_user -c "${OCF_RESKEY_repadm} ${repl_demote_param}"
+	rc=$?
+	if [ $rc -ne 0 ]; then
+		ocf_log err demoteserver returned $rc
+		return $OCF_ERR_GENERIC
+	fi
+	faircomdb_log demote: exit, rc=$rc
+	return $OCF_SUCCESS;
+}
+
+case $__OCF_ACTION in
+ meta-data)
+	faircomdb_meta_data
+	exit $OCF_SUCCESS
+	;;
+ start)
+	faircomdb_start
+	;;
+ stop)
+	faircomdb_stop
+	;;
+ status|monitor)
+	faircomdb_monitor
+	;;
+ validate-all)
+	faircomdb_validate
+	;;
+ promote)
+	faircomdb_promote
+	;;
+ demote)
+	faircomdb_demote
+	;;
+ notify)
+	faircomdb_notify
+	;;
+ usage|help)
+	faircomdb_usage
+	exit $OCF_SUCCESS
+	;;
+ *)
+	faircomdb_log unrecognized action: $__OCF_ACTION
+	faircomdb_usage
+	exit $OCF_ERR_UNIMPLEMENTED
+	;;
+esac
+rc=$?
+ocf_log debug "${OCF_RESOURCE_INSTANCE} $__OCF_ACTION : $rc"
+exit $rc
+

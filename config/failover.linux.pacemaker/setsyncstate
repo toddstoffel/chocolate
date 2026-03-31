@@ -1,0 +1,41 @@
+#!/bin/bash
+
+case $1 in
+"y")
+	crm_attribute -G --name promotestate --update "{ \"node\":\"$(hostname)\", \"sync\":\"y\" }"
+	rc=$?
+	
+	# You can add a notification that the server is entering synchronous mode here.
+	# For example:
+	# echo "`date` Node $(hostname) entered synchronous mode." >> /tmp/faircomdbSyncState.log
+	
+	echo rc=$rc
+	exit $rc
+	;;
+"n")
+	if [ "$2" == "" ]; then
+		crm_attribute -G --name promotestate --update "{ \"node\":\"$(hostname)\", \"sync\":\"n\" }"
+	else
+		crm_attribute -G --name promotestate --update "{ \"node\":\"$(hostname)\", \"sync\":\"n\", \"logposition\":\"$2\" }"
+	fi
+	rc=$?
+
+	# You can add a notification that the server is entering asynchronous mode here.
+	# For example:
+	# echo "`date` Node $(hostname) entered asynchronous mode." >> /tmp/faircomdbSyncState.log
+
+	echo rc=$rc
+	exit $rc
+	;;
+"c")
+	# option c checks that the script can be executed
+	echo rc=0
+	exit 0
+	;;
+*)
+	echo error: must specify y, n, or c
+	rc=1
+	echo rc=$rc
+	exit $rc
+	;;
+esac

@@ -1,0 +1,227 @@
+{
+	"listeners": [
+	{
+		"serviceName": "http8080",
+		"description": "Port 8080 using insecure HTTP protocol for REST and Web Apps on all TCP/IP addresses bound to this server",
+		"port": 8080,
+		"protocol": "http",
+		"enabled": true
+	},
+	{
+		"serviceName": "https8443",
+		"description": "Port 8443 using TLS-secured HTTPS protocol for REST and Web Apps on all TCP/IP addresses bound to this server",
+		"port": 8443,
+		"protocol": "https",
+		"enabled": false,
+		"tls": {
+			"serverCertificateFilename": "./web/fccert.pem"
+		}
+	},
+	{
+		"serviceName": "mqtt1883",
+		"description": "Port 1883 using insecure MQTT protocol for the MQTT broker on all TCP/IP addresses bound to this server",
+		"port": 1883,
+		"protocol": "mqtt",
+		"enabled": true
+	},
+	{
+		"serviceName": "mqtts8883",
+		"description": "Port 8883 using TLS-secured MQTTS protocol for the MQTT broker on all TCP/IP addresses bound to this server",
+		"port": 8883,
+		"protocol": "mqtts",
+		"enabled": false,
+		"tls": {
+			"serverCertificateFilename": "./web/fccert.pem"
+		}
+	},
+	{
+		"serviceName": "mqttws9001",
+		"description": "Port 9001 using WebSocket protocol for the MQTT broker on all TCP/IP addresses bound to this server",
+		"port": 9001,
+		"protocol": "mqttws",
+		"enabled": true
+	},
+	{
+		"serviceName": "mqttwss9002",
+		"description": "Port 9002 using TLS-secured WebSocket protocol for the MQTT broker on all TCP/IP addresses bound to this server",
+		"port": 9002,
+		"protocol": "mqttwss",
+		"enabled": false,
+		"tls": {
+			"serverCertificateFilename": "./web/fccert.pem"
+		}
+	}
+	],
+
+	"jsonActionApiDefaults":
+	{
+		"defaultApi": "hub",
+		"defaultBinaryFormat": "hex",
+		"defaultDatabaseName": "faircom",
+		"defaultDebug": "none",
+		"defaultOwnerName": "admin",
+		"defaultResponseOptions":
+		{
+			"binaryFormat": "hex",
+			"dataFormat": "objects",
+			"numberFormat": "number"
+		},
+		"idleConnectionTimeoutSeconds": 3600,
+		"idleCursorTimeoutSeconds": 600,
+		"defaultRetentionPolicy": "autoPurge",
+		"defaultRetentionUnit": "week",
+		"defaultRetentionPeriod": 4,
+		"maxJsonApiSessions": 1024,
+		"maxJsonApiSessionsPerIpAddress": 50,
+		"maxJsonApiSessionsPerUsername": 50
+	},
+
+	"applicationRoot": "./web/apps/",
+	"requestIterationMilliseconds": 1,
+	"requestMaxThreads": 1024,
+	"maxConnectionsPerIpAddress": 25,
+	"connInactiveTimeout": 30,
+	"connRequestTimeout": 10,
+	"maxDBconnCount": 2048,
+
+	"mqtt": {
+		"authenticationMethods": [ "none", "password", "clientCertificate" ],
+
+		"defaultDowngradeQoS": false,
+		"defaultMaxInflightMessages": 20,
+		"defaultMaxDeliveryRatePerSecond": 0,
+
+		"statsRetentionUnit": "day",
+		"statsRetentionPeriod": 14,
+		"disableThroughputStats": false,
+
+		"historyRetentionUnit": "day",
+		"historyRetentionPeriod": 30,
+
+		"enableMqttLogging": false,
+
+		"statsCollectionFrequencySeconds": 12,
+		"statsPublishFrequencySeconds": 30
+	},
+
+	"storeAndForward":
+	{
+		"controlSentPosition": false,
+		"transactionLog": true,
+		"defaultSubscriberMessageCommitFrequency": 100,
+		"defaultSubscriberMessageCommitIntervalMSecs": 1000
+	},
+
+	"applications": [
+	{
+		"serviceName": "Ace Monitor",
+		"uriPath": "AceMonitor",
+		"serviceLibrary": "libctmonitor.so",
+		"enabled": true
+	},
+	{
+		"serviceName": "Data Explorer",
+		"uriPath": "SQLExplorer",
+		"serviceLibrary": "libctsqlexplorer.so",
+		"enabled": true
+	},
+	{
+		"serviceName": "ISAM Explorer",
+		"uriPath": "ISAMExplorer",
+		"serviceLibrary": "libctisamexplorer.so",
+		"enabled": true
+	}
+
+	],
+
+	"apiRoot": "./api",
+
+	"apis": [
+	{
+		"serviceName": "hub",
+		"enabled": true
+	},
+	{
+		"serviceName": "mq",
+		"enabled": true
+	},
+	{
+		"serviceName": "db",
+		"enabled": true
+	},
+	{
+		"serviceName": "transform",
+		"enabled": true
+	}
+	],
+
+	"integrationServices": [
+	{
+		"serviceName": "opcua",
+		"serviceLibrary": "libopcservice.so",
+		"schemaName": "opcua",
+		"enabled": false
+	},
+	{
+		"serviceName": "modbus",
+		"serviceLibrary": "libmodbusservice.so",
+		"schemaName": "modbus",
+		"enabled": true
+	},
+	{
+		"serviceName": "ab",
+		"serviceLibrary": "libabservice.so",
+		"schemaName": "ab",
+		"enabled": false
+	},
+	{
+		"serviceName": "siemensS7",
+		"serviceLibrary": "libsiemenss7service.so",
+		"schemaName": "siemensS7",
+		"enabled": false
+	},
+	{
+		"serviceName": "mtconnect",
+		"serviceLibrary": "libmtconnectservice.so",
+		"schemaName": "mtconnect",
+		"enabled": false
+	},
+	{
+		"serviceName": "rest",
+		"serviceLibrary": "librestservice.so",
+		"schemaName": "rest",
+		"enabled": false
+	}
+	],
+
+	"transformServices": [
+	{
+		"serviceName": "siemensUDT2JSON",
+		"serviceLibrary": "libsiemensudtservice.so",
+		"enabled": false
+	}
+	],
+
+	"otherServices": [
+	{
+		"serviceName": "dbnotify",
+		"serviceLibrary": "./dbnotify/libfcdbnotify.so",
+		"enabled": false
+	},
+	{
+		"serviceName": "ctagent",
+		"serviceLibrary": "./agent/libctagent.so",
+		"enabled": false
+	},
+	{
+		"serviceName": "thingworx",
+		"serviceLibrary": "./thingworx/libctthingworx.so",
+		"enabled": false
+	},
+	{
+		"serviceName": "aggregation",
+		"serviceLibrary": "./aggregation/libcttimestamp.so",
+		"enabled": false
+	}
+	]
+}

@@ -1,0 +1,10 @@
+{
+  "api": "mq",
+  "authToken": "TnV4jnpzfGkc9q4ydkMeljW17BvpPEMSSTSalTLUYVM0VsF9EjMw5YlOY7IqSiQI",
+  "action": "describeTopics",
+  "params": {
+    "topics": [
+      "topic1"
+    ]
+  }
+}

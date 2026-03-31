@@ -1,16 +1,24 @@
 services:
   faircom-edge:
-    image: toddstoffel0810/faircom-edge:latest
+    build: .
+    image: faircom-edge-licensed
     container_name: faircom-edge
     restart: unless-stopped
     ports:
       - "8080:8080"   # REST / JSON API
-      - "8443:8443"   # HTTPS
       - "1883:1883"   # MQTT
-      - "8883:8883"   # MQTT over TLS
+      - "9001:9001"   # MQTT WebSocket
       - "6597:6597"   # FairCom native
     volumes:
-      - faircom_data:/opt/faircom/server/data
+      - ./data:/opt/faircom/data
+      - ./config:/opt/faircom/config
+      - ./libs:/opt/faircom/server/integration
+      - ./license/ctsrvr56111112.lic:/opt/faircom/server/ctsrvr56111112.lic
+    healthcheck:
+      test: ["CMD", "bash", "-c", "(echo > /dev/tcp/localhost/8080)"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
 
-volumes:
-  faircom_data:
+

@@ -1,0 +1,26 @@
+{
+    "databaseName": "ctreeSQL",
+    "tableName": "custmast",
+    "ownerName": "admin",
+    
+    "publishMqttMessages": [
+        {
+            "topic": "topic1",
+            "brokerConnectionName": "brokerCtree",
+            "triggers": [ "delete"],
+            "QoS": 0,
+            "recordFilter": "!stricmp(cm_custstat,\"CA\")",
+            "includedFields": [ "cm_custnumb", "cm_custzipc", "cm_custcity" ],
+            "includePrimaryKey": "never"
+        },
+        {
+            "topic": "topic1",
+            "brokerConnectionName": "brokerCtree",
+            "triggers": [ "insert", "update"],
+            "QoS": 0,
+            "recordFilter": "atoi(cm_custnumb) >= 1000",
+            "includePrimaryKey": "never", 
+            "tagChanges": "forEachField"
+        }
+    ]
+}

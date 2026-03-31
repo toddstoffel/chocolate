@@ -7,7 +7,7 @@ Defines all sensor definitions, line segments, and FairCom Edge connection setti
 FAIRCOM_HOST = "localhost"
 FAIRCOM_PORT = 8080
 FAIRCOM_BASE_URL = f"http://{FAIRCOM_HOST}:{FAIRCOM_PORT}"
-FAIRCOM_DB = "chocolate_factory"
+FAIRCOM_DB = "faircom"
 FAIRCOM_USER = "admin"
 FAIRCOM_PASSWORD = "ADMIN"
 
@@ -15,7 +15,7 @@ FAIRCOM_PASSWORD = "ADMIN"
 # How many seconds of historical data to backfill on first run
 BACKFILL_SECONDS = 1800  # 30 minutes
 # Interval between readings in seconds
-DEFAULT_INTERVAL = 60.0  # 1 reading per sensor per minute
+DEFAULT_INTERVAL = 2.0   # 1 reading per sensor every 2 seconds
 # Probability of an anomaly on any given reading (per sensor)
 ANOMALY_PROBABILITY = 0.003
 # Probability of a minor drift starting on any given reading
@@ -998,4 +998,92 @@ SENSORS = [
 ]
 
 
-SENSORS = _build_sensors()
+# ─── Realistic polling-interval rules ──────────────────────────────────────────
+# Applied in order; first match wins.
+# Sensors with an explicit interval= in their _s() definition are never overridden.
+_INTERVAL_RULES: list[tuple[str, float]] = [
+    # Quality gates / inline inspection                             0.5 s
+    ("_INS_",           0.5),
+    ("PKG_LABEL_OK",    0.5),
+    ("PKG_INDATE_OK",   0.5),
+
+    # Critical tempering / depositor control                        1 s
+    ("_TEMP_TCZ",       1.0),
+    ("TEMP_MOLD_IR",    1.0),
+    ("DEP_TEMP_CHOC",   1.0),
+    ("DEP_VAC",         1.0),
+    ("DEP_PRES",        1.0),
+    ("PRES_PUMP",       1.0),
+    ("PKG_BARS_MIN",    1.0),
+    ("WGHR",            1.0),   # dosing weigher weight / rate
+
+    # Vibration, motor current, fast dynamics                       2 s
+    ("_VX",             2.0),
+    ("_VY",             2.0),
+    ("_VZ",             2.0),
+    ("_VIB",            2.0),
+    ("_CURR",           2.0),
+
+    # Process variables: flow, pressure, speed, power               5 s
+    ("_FLOW",           5.0),
+    ("_PRES",           5.0),
+    ("_SPD",            5.0),
+    ("_POWER",          5.0),
+    ("_SUPERHEAT",      5.0),
+    ("_VALVE",          5.0),
+    ("_CYCLE",          5.0),
+    ("_DOOR",           5.0),
+    ("PKG_REJECTS",     5.0),
+    ("_SUPPLY_T",       5.0),
+    ("_RETURN_T",       5.0),
+    ("_KW",             5.0),   # active power meter (before _KWH)
+
+    # Temperature, humidity, environment (non-critical)            10 s
+    ("_TEMP",          10.0),
+    ("_HUMID",         10.0),
+    ("_RH",            10.0),
+    ("FAN_SPD",        10.0),
+    ("O2_FLUE",        10.0),
+    ("_PF",            10.0),
+    ("DEW_PT",         10.0),
+    ("PAL_WT",         10.0),
+    ("UPTIME",         10.0),
+
+    # Slow-changing: levels, bearing temps, batch accumulators     30 s
+    ("_LVL",           30.0),
+    ("_BTEMP",         30.0),
+    ("FILTER_DP",      30.0),
+    ("COND_TEMP",      30.0),
+    ("BATCH_WT",       30.0),
+    ("RECOVERY",       30.0),
+    ("_PH",            30.0),
+    ("_VIS",           60.0),
+
+    # Very slow accumulators                                        60 s
+    ("_TDS",           60.0),
+    ("OIL_PPM",        60.0),
+    ("_KWH",           60.0),
+]
+
+
+def _apply_interval_defaults(sensors: list[dict]) -> list[dict]:
+    """Assign realistic polling intervals to any sensor not already having one."""
+    for s in sensors:
+        if "interval" in s:
+            continue
+        tag = s["tag"]
+        for pattern, iv in _INTERVAL_RULES:
+            if pattern in tag:
+                s["interval"] = iv
+                break
+        # No match → sensor keeps DEFAULT_INTERVAL (2.0 s) implicitly
+    return sensors
+
+
+SENSORS = _apply_interval_defaults(_build_sensors())
+
+# ─── Modbus simulator ──────────────────────────────────────────────────────────
+MODBUS_HOST = "0.0.0.0"          # bind address for the simulated Modbus TCP server
+MODBUS_CONNECT_HOST = "host.docker.internal"  # address FairCom uses to reach the simulator
+MODBUS_PORT = 5020                # use 5020 to avoid requiring root/sudo privileges
+MODBUS_UNIT_ID = 1                # Modbus unit / slave ID

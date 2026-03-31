@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="us-ascii"?>
+<replfilefilter version="1" persistent="y">
+        <file status="include">admin_test1.dat</file>
+        <file status="include">admin_test2.dat</file>
+        <purpose>create_file</purpose>
+        <purpose>read_log</purpose>
+        <purpose>open_file</purpose>
+        <purpose>sync_commit</purpose>
+</replfilefilter>
+

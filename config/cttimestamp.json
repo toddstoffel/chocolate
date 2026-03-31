@@ -1,0 +1,87 @@
+{
+	"sourceTableList": [
+		{
+			"database": "ctreeSQL",
+			"sourceTableName": "sensor",
+			"aggregatedTableList": [
+				{
+					"aggregatedTableName": "aggregation1",
+					"timestampFieldName": "ts",
+					"unitOfTime": "second",
+					"unitOfTimeValue": 20,
+					"aggregatedFieldList": [
+						{
+							"aggregatedFieldName": "TempAverage",
+							"sourceFieldName": "temperature",
+							"aggregateFunction": "average"
+						},
+						{
+							"aggregatedFieldName": "TempStdDev",
+							"sourceFieldName": "temperature",
+							"aggregateFunction": "stddev"
+						},
+						{
+							"aggregatedFieldName": "TempMin",
+							"sourceFieldName": "temperature",
+							"aggregateFunction": "minimum"
+						},
+						{
+							"aggregatedFieldName": "HumidAverage",
+							"sourceFieldName": "humidity",
+							"aggregateFunction": "average"
+						},
+						{
+							"aggregatedFieldName": "HumidStdDev",
+							"sourceFieldName": "humidity",
+							"aggregateFunction": "stddev"
+						},
+						{
+							"aggregatedFieldName": "HumidMin",
+							"sourceFieldName": "humidity",
+							"aggregateFunction": "minimum"
+						}
+					]
+				},
+				{
+					"aggregatedTableName": "aggregation2",
+					"timestampFieldName": "ts",
+					"unitOfTime": "minute",
+					"unitOfTimeValue": 2,
+					"aggregatedTableOwner": "admin",
+					"aggregatedFieldList": [
+						{
+							"aggregatedFieldName": "TempAverage",
+							"sourceFieldName": "temperature",
+							"aggregateFunction": "average"
+						},
+						{
+							"aggregatedFieldName": "TempStdDev",
+							"sourceFieldName": "temperature",
+							"aggregateFunction": "stddev"
+						},
+						{
+							"aggregatedFieldName": "TempMin",
+							"sourceFieldName": "temperature",
+							"aggregateFunction": "minimum"
+						},
+						{
+							"aggregatedFieldName": "PressAverage",
+							"sourceFieldName": "pressure",
+							"aggregateFunction": "average"
+						},
+						{
+							"aggregatedFieldName": "PressStdDev",
+							"sourceFieldName": "pressure",
+							"aggregateFunction": "stddev"
+						},
+						{
+							"aggregatedFieldName": "PressMax",
+							"sourceFieldName": "pressure",
+							"aggregateFunction": "maximum"
+						}
+					]
+				}
+			]
+		}
+	]
+}

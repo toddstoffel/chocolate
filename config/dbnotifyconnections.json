@@ -1,0 +1,27 @@
+{
+   "logLevel":"production",
+   "directConnectionsToFairComMq":[
+      {
+         "brokerConnectionName":"brokerCtree",
+         "faircomServerName":"FCEDGEMQ",
+         "brokerHostname":"localhost",
+         "brokerUserName":"ADMIN",
+         "brokerUserPassword":"ADMIN",
+         "reconnectFrequencySeconds":15,
+         "tls":{
+            "certificateFilename":"ctsrvr.pem",
+            "enabled":false,
+            "x509_authentication":{
+               "certificateFilename":"admin.pem",
+               "privateKeyFilename":"admin.key",
+               "enabled":false
+            }
+         },
+         "metadata":{
+            
+         },
+         "defaultIncludePrimaryKey":"never",
+         "defaultTagChanges":"never"
+      }
+   ]
+}
