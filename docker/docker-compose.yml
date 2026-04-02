@@ -1,0 +1,22 @@
+services:
+  faircom-edge:
+    image: faircomteam/edge:latest
+    container_name: faircom-edge
+    restart: unless-stopped
+    ports:
+      - "8080:8080"   # REST / JSON API
+      - "1883:1883"   # MQTT
+      - "9001:9001"   # MQTT WebSocket
+      - "6597:6597"   # FairCom native
+    volumes:
+      - ../data:/opt/faircom/data
+      - ../config:/opt/faircom/config
+      - ../libs:/opt/faircom/server/integration
+    healthcheck:
+      test: ["CMD", "bash", "-c", "(echo > /dev/tcp/localhost/8080)"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
+
+

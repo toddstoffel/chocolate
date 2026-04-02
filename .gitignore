@@ -11,14 +11,12 @@ build/
 output/
 
 # FairCom data (binary DB files — distribute separately)
-data/
+data/*
+!data/.gitkeep
 
 # FairCom installer tarballs
 *.tar
 
-# License files
-license/*.lic
-*.lic
 
 # Internal notes
 idea.txt
@@ -28,5 +26,3 @@ idea.txt
 .idea/
 .vscode/
 *.swp
-
-license/

@@ -1,67 +1,68 @@
 # Chocolate Factory – FairCom Edge Demo
 
-A complete chocolate factory IoT demo built on [FairCom Edge](https://www.faircom.com/edge). It includes a Modbus TCP simulator that exposes 3,982 plant-floor sensors as holding registers, a data backfill tool that pre-loads ~90,000 rows of realistic historical data, and a Docker Compose setup that brings the whole stack up in a single command.
+A realistic chocolate factory IoT demo built on [FairCom Edge](https://www.faircom.com/edge). A Modbus TCP simulator exposes 3,982 plant-floor sensors as holding registers, FairCom Edge polls them into 17 integration tables, and a pre-seeded dataset lets you start exploring immediately.
 
-## Architecture
+## Quick start
 
-```
-  modbus_simulator.py          FairCom Edge              ./data/
-  ─────────────────────        ──────────────────────     ──────────────────
-  Modbus TCP server       ←→   Modbus connector       →   17 integration tables
-  (3,982 sensors as            (polls per-segment          (one per line segment)
-   holding registers)           intervals, stores
-                                readings continuously)
-  generate_data.py    ─────────────────────────────────►  same integration tables
-  (setup + bulk backfill via JSON API)
+```bash
+# Install Python dependencies
+pip install -r requirements.txt
+
+# Run the demo (starts FairCom Edge, restores seed data, launches the Modbus simulator)
+./demo.sh
 ```
 
-FairCom Edge runs in Docker and stores all data in `./data/` (a local bind mount). The `./data/` directory is gitignored and distributed separately — when it is present, `docker compose up` starts with all historical data already loaded.
+FairCom Edge is available at **http://localhost:8080** (admin / ADMIN).
 
 ## Prerequisites
 
 - [Docker Desktop](https://www.docker.com/products/docker-desktop/)
 - Python 3.9+
-- A FairCom Edge license file (place it in `./license/` as `ctsrvr<serial>.lic`)
+- [Git LFS](https://git-lfs.github.com/) (the `data_seed/` directory is stored with LFS)
 
-Install Python dependencies (no virtual environment required):
-
-```bash
-pip install pymodbus>=3.0 requests
-```
-
-## Quick start
+After cloning, pull the LFS files if they weren't fetched automatically:
 
 ```bash
-# 1. Start FairCom Edge (loads pre-seeded data if ./data/ is present)
-docker compose up -d
-
-# 2. (First run only) Create the 17 integration tables and connect to the simulator
-python generate_data.py --mode setup -y
-
-# 3. (Optional) Bulk-backfill ~90k rows of historical data
-python generate_data.py --mode backfill --seconds 10600 --row-delay 0 -y
-
-# 4. Start the live Modbus TCP simulator on port 5020
-python modbus_simulator.py
+git lfs pull
 ```
 
-FairCom Edge's REST API and Explorer are available at **http://localhost:8080** (admin / ADMIN).
+## Project structure
 
-## Files
+```
+├── demo.sh                  # One-command demo launcher
+├── requirements.txt         # Python dependencies
+├── docker/
+│   ├── Dockerfile           # Optional custom FairCom Edge image
+│   └── docker-compose.yml   # Container + volume mounts
+├── simulator/
+│   ├── config.py            # 3,982 sensor definitions and connection settings
+│   ├── generate_data.py     # Schema setup, backfill, and live streaming
+│   ├── modbus_simulator.py  # Async Modbus TCP server
+│   └── check_state.py       # Prints row counts for all integration tables
+├── config/                  # FairCom Edge server configuration
+├── data/                    # Working data directory (bind-mounted into Docker)
+├── data_seed/               # Pre-seeded snapshot (5,000 rows/table, stored in LFS)
+└── libs/                    # FairCom Edge integration libraries
+```
 
-| File | Purpose |
-|---|---|
-| `config.py` | All 3,982 sensor definitions, per-sensor polling intervals, and connection defaults |
-| `generate_data.py` | Schema setup, historical backfill, and live streaming via FairCom JSON API |
-| `modbus_simulator.py` | Async Modbus TCP server — each sensor refreshes at its own realistic interval |
-| `check_state.py` | Prints live row counts for all 17 integration tables |
-| `docker-compose.yml` | Runs FairCom Edge with bind-mounted `./data/`, `./config/`, and `./libs/` |
-| `Dockerfile` | Builds a licensed image — removes the eval license baked into the base image |
-| `requirements.txt` | Python dependencies |
+## How the demo works
+
+```
+  simulator/                   FairCom Edge              data/
+  ──────────────────           ──────────────────────     ──────────────────
+  Modbus TCP server       ←→   Modbus connector       →   17 integration tables
+  (3,982 sensors as            (polls per-segment          (one per line segment)
+   holding registers)           intervals, stores
+                                readings continuously)
+```
+
+1. **`demo.sh`** stops any previous run, restores `data/` from the `data_seed/` snapshot (so every run starts with exactly 5,000 rows per table), starts FairCom Edge, launches the Modbus simulator, and connects FairCom Edge to it.
+2. **FairCom Edge** runs in Docker with `data/`, `config/`, and `libs/` bind-mounted.
+3. **The Modbus simulator** refreshes each sensor at its own realistic polling interval. FairCom Edge polls and stores readings continuously.
 
 ## Sensor coverage (3,982 tags)
 
-Sensors are generated in `config.py` across 17 line segments and all shared plant systems.
+Sensors are defined in `simulator/config.py` across 17 line segments and all shared plant systems.
 
 | Segment | Description | Tags |
 |---|---|---|
@@ -86,7 +87,7 @@ Sensors are generated in `config.py` across 17 line segments and all shared plan
 
 ## Polling intervals
 
-Each sensor is assigned a realistic polling interval in `config.py` based on its function:
+Each sensor is assigned a realistic polling interval based on its function:
 
 | Interval | Sensor types |
 |---|---|
@@ -97,8 +98,6 @@ Each sensor is assigned a realistic polling interval in `config.py` based on its
 | 10 s | General temperatures, humidity, fan speed, environmental, power factor |
 | 30 s | Level, bearing temps, filter ΔP, batch weight, pH |
 | 60 s | Viscosity, TDS, cumulative energy (kWh) |
-
-The Modbus simulator ticks at 100 ms and refreshes each register only when its interval elapses. FairCom Edge connector poll rates match the fastest sensor in each segment.
 
 ## Modbus register layout
 
@@ -112,11 +111,11 @@ Each sensor occupies two consecutive 16-bit holding registers encoding an IEEE 7
 
 ## Simulation model
 
-Each sensor generates values using a per-sensor setpoint with the following applied on top:
+Each sensor generates values using a per-sensor setpoint with:
 
 - Gaussian noise scaled by a per-sensor `noise_std`
 - Slow random drift that self-corrects over time
-- Low-probability anomaly spikes (controlled by `ANOMALY_PROBABILITY` in `config.py`)
+- Low-probability anomaly spikes (controlled by `ANOMALY_PROBABILITY` in `simulator/config.py`)
 - Subtle sinusoidal oscillation to simulate PID cycling
 
 ## Distributing the demo
