@@ -15,7 +15,7 @@ Typical workflow:
   FairCom Edge then polls this simulator live at the configured interval.
 
 Register layout (holding registers, unit-id 1):
-  Sensor at index  i  → registers  [ i*2,  i*2+1 ]  (IEEE 754 float32 ABCD)
+    Sensor at index  i  → registers  [ i*2+1,  i*2+2 ]  (IEEE 754 float32 ABCD)
 
 Usage:
     python modbus_simulator.py
@@ -61,8 +61,10 @@ from simulator.generate_data import SensorState
 
 # ─── Register mapping ──────────────────────────────────────────────────────────
 # Each sensor → 2 consecutive 16-bit holding registers (IEEE 754 float32)
+# pymodbus 3.12+ requires register addresses to start at 1.
+BASE_REGISTER = 1
 NUM_REGISTERS = len(SENSORS) * 2    # total 16-bit words needed
-TAG_TO_ADDR: dict[str, int] = {s["tag"]: i * 2 for i, s in enumerate(SENSORS)}
+TAG_TO_ADDR: dict[str, int] = {s["tag"]: (i * 2) + BASE_REGISTER for i, s in enumerate(SENSORS)}
 
 
 
@@ -84,7 +86,18 @@ def registers_to_float(hi: int, lo: int) -> float:
 
 # ─── Register updater ──────────────────────────────────────────────────────────
 
-async def update_registers(context: ModbusServerContext, base_interval: float):
+def _set_hr_value(block: ModbusSequentialDataBlock, address: int, value: int) -> None:
+    """Write a single holding register value into the backing block.
+
+    For pymodbus 3.12+, ModbusSequentialDataBlock exposes `simdata` as a
+    plain list and enforces 1-based Modbus addressing.
+    """
+    index = address - BASE_REGISTER
+    if 0 <= index < len(block.simdata):
+        block.simdata[index] = int(value) & 0xFFFF
+
+
+async def update_registers(block: ModbusSequentialDataBlock, base_interval: float):
     """Update Modbus holding registers; each sensor refreshes at its own interval."""
     states      = {s["tag"]: SensorState(s) for s in SENSORS}
     last_update = {s["tag"]: -s.get("interval", base_interval) for s in SENSORS}
@@ -94,17 +107,15 @@ async def update_registers(context: ModbusServerContext, base_interval: float):
     print(f"\n  Modbus registers updating (per-sensor intervals, {NUM_REGISTERS} registers, {len(SENSORS)} sensors)")
     while True:
         t     = time.time() - t0
-        slave = context[0x00]
-
         for i, sensor in enumerate(SENSORS):
             tag = sensor["tag"]
             iv  = sensor.get("interval", base_interval)
             if t - last_update[tag] >= iv:
                 value = states[tag].generate_value(t)
                 hi, lo = float_to_registers(value)
-                addr   = i * 2
-                slave.setValues(3, addr,     [hi])   # high word
-                slave.setValues(3, addr + 1, [lo])   # low  word
+                addr   = (i * 2) + BASE_REGISTER
+                _set_hr_value(block, addr, hi)       # high word
+                _set_hr_value(block, addr + 1, lo)   # low  word
                 last_update[tag] = t
 
         await asyncio.sleep(tick)
@@ -116,12 +127,12 @@ async def run(args):
     # Build Modbus datastore — add 10 padding registers so the last sensor
     # read (address + length) never hits the exact block boundary, which
     # causes pymodbus to return exception code 2 (ILLEGAL_DATA_ADDRESS).
-    block   = ModbusSequentialDataBlock(0, [0] * (NUM_REGISTERS + 10))
+    block   = ModbusSequentialDataBlock(BASE_REGISTER, [0] * (NUM_REGISTERS + 10))
     slave   = ModbusSlaveContext(hr=block)
     context = ModbusServerContext(devices=slave, single=True)
 
     tasks = [
-        asyncio.create_task(update_registers(context, args.update_interval)),
+        asyncio.create_task(update_registers(block, args.update_interval)),
     ]
 
     # Start Modbus TCP server (blocks until cancelled)

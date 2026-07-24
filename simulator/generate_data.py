@@ -188,7 +188,7 @@ def setup_modbus_connectors(modbus_server: str = None, modbus_port: int = None):
     """Create one Modbus input (and integration table) per line segment.
 
     Each input maps only the sensors belonging to that segment.  Register
-    addresses are the global sensor index × 2, matching the simulator layout.
+    addresses are (global sensor index × 2) + 1, matching the simulator layout.
     FairCom Edge auto-creates each integration table and begins polling.
     """
     server = modbus_server or MODBUS_CONNECT_HOST
@@ -218,7 +218,8 @@ def setup_modbus_connectors(modbus_server: str = None, modbus_port: int = None):
             {
                 "propertyPath":       s["tag"],
                 "modbusDataAccess":   "holdingregister",
-                "modbusDataAddress":  i * 2,       # global register address
+                # pymodbus 3.12+ uses 1-based register addresses.
+                "modbusDataAddress":  (i * 2) + 1,  # global register address
                 "modbusUnitId":       MODBUS_UNIT_ID,
                 "modbusDataLen":      2,
                 "modbusRegisterType": "ieeefloat32ABCD",
